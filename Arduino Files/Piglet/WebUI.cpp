@@ -1129,6 +1129,7 @@ static void handleWigleUploadOne() {
   if (!server.hasArg("name")) { server.send(400, "text/plain", "Missing name"); return; }
 
   String path = server.arg("name");
+  if (!isAllowedDataPath(path)) { server.send(403, "text/plain", "Forbidden"); return; }
   if (!SD.exists(path)) { server.send(404, "text/plain", "Not found"); return; }
 
   uploading = true;

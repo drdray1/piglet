@@ -1,5 +1,27 @@
 # Changelog
 
+## v2.52 (2026-05-28)
+
+Summary entry — the per-release changelog between v1.3-beta and v2.52
+was not maintained inline. See git history (`git log v1.3-beta..HEAD`)
+for the full per-commit record. Headline changes that shipped in this
+range:
+
+- WatchdogsGoWars upload integration alongside WiGLE
+- ESP-Now mesh mode (Core / Node) with `meshModeOnBoot` auto-start
+- T-Dongle C5 board support and pinmap detection (`board=` config)
+- Multi-board pin mapping (XIAO S3, C5, C6, S3 + Expansion Base)
+- 5 GHz scanning on C5
+- Screen rotation (`rotateScreen180`)
+- Device naming in CSV filename + WiGLE header (`deviceName`)
+- Battery test logging (`batteryTest`)
+- Plain-text `/wardriver.cfg` replaces JSON
+- T-Dongle C5: empty-CSV bug fix, SD write-failure recovery, post-batch flush (v2.52)
+
+(Historical entries between v1.3-beta and v2.52 not captured here.)
+
+---
+
 ## v1.3-beta (2026-02-23)
 
 ### New Features

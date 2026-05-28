@@ -1,7 +1,6 @@
 #include "Config.h"
 #include "Globals.h"
 #include <SD.h>
-#include <ArduinoJson.h>
 
 #if __has_include(<esp_chip_info.h>)
   #include <esp_chip_info.h>
@@ -166,40 +165,7 @@ bool loadConfigFromSD() {
     return true;
   }
 
-  // Backward compat: if old JSON exists, load it once, then save as CFG
-  if (SD.exists("/wardriver.json")) {
-    Serial.println("[CFG] Found legacy /wardriver.json, importing once -> /wardriver.cfg");
-
-    File f = SD.open("/wardriver.json", FILE_READ);
-    if (!f) {
-      Serial.println("[CFG] Failed to open /wardriver.json for read");
-      return false;
-    }
-
-    DynamicJsonDocument doc(2048);
-    DeserializationError err = deserializeJson(doc, f);
-    f.close();
-    if (err) {
-      Serial.print("[CFG] JSON parse error: ");
-      Serial.println(err.c_str());
-      return false;
-    }
-
-    cfg.wigleBasicToken = doc["wigleBasicToken"] | "";
-    cfg.homeSsid        = doc["homeSsid"]        | "";
-    cfg.homePsk         = doc["homePsk"]         | "";
-    cfg.wardriverSsid   = doc["wardriverSsid"]   | cfg.wardriverSsid;
-    cfg.wardriverPsk    = doc["wardriverPsk"]    | cfg.wardriverPsk;
-    cfg.gpsBaud         = doc["gpsBaud"]         | cfg.gpsBaud;
-    cfg.scanMode        = doc["scanMode"]        | cfg.scanMode;
-
-    // Save as new format
-    bool ok = saveConfigToSD();
-    Serial.println(ok ? "[CFG] Legacy JSON imported + saved to CFG" : "[CFG] Legacy JSON imported but CFG save failed");
-    return ok;
-  }
-
-  Serial.println("[CFG] No /wardriver.cfg (or legacy json). Using defaults.");
+  Serial.println("[CFG] No /wardriver.cfg. Using defaults.");
   return false;
 }
 
