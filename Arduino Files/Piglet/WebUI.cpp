@@ -4,6 +4,7 @@
 #include "SDUtils.h"
 #include "Display.h"
 #include "WigleUpload.h"
+#include "WebUI_masking.h"
 #include <ArduinoJson.h>
 
 // ---------------- Embedded HTML ----------------
@@ -467,7 +468,7 @@ function formatBytes(b){
 }
 
 /* ---- Masked config keys that should not be filled back into form ---- */
-const maskedKeys=new Set(['homePsk']);
+const maskedKeys=new Set(['homePsk','wigleBasicToken','wdgwarsApiKey']);
 
 /* ---- Status ---- */
 async function loadStatus(){
@@ -826,10 +827,10 @@ static void handleStatus() {
   doc["wigleLastHttpCode"] = wigleLastHttpCode;
 
   JsonObject c = doc.createNestedObject("config");
-  c["wigleBasicToken"] = cfg.wigleBasicToken;
-  c["wdgwarsApiKey"]   = cfg.wdgwarsApiKey;
+  c["wigleBasicToken"] = maskedField(cfg.wigleBasicToken);
+  c["wdgwarsApiKey"]   = maskedField(cfg.wdgwarsApiKey);
   c["homeSsid"] = cfg.homeSsid;
-  c["homePsk"] = cfg.homePsk.length() ? "(set)" : "";
+  c["homePsk"] = maskedField(cfg.homePsk);
   c["wardriverSsid"] = cfg.wardriverSsid;
   c["wardriverPsk"] = cfg.wardriverPsk;
   c["gpsBaud"] = cfg.gpsBaud;
