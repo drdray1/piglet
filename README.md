@@ -272,16 +272,6 @@ wdgwarsApiKey=EnterWDGoWarsAPIKeyHere
 maxBootUploads=-1
 
 # ------------------------------------------------------------
-# Device Name (optional)
-# ------------------------------------------------------------
-# A short label for this device. Used in WiGLE CSV filenames
-# and in the WiGLE upload header so you can tell devices apart.
-# Spaces become underscores. Max 20 characters.
-# Leave empty to use the default (no prefix).
-
-deviceName=
-
-# ------------------------------------------------------------
 # Home Wi-Fi (STA mode)
 # ------------------------------------------------------------
 # If provided, device connects on boot.
@@ -332,6 +322,29 @@ speedUnits=mph
 # false = disabled
 
 batteryTest=false
+
+# ------------------------------------------------------------
+# Device Name (optional)
+# ------------------------------------------------------------
+# A short label for this device. Used in WiGLE CSV filenames
+# and in the WiGLE upload header so you can tell devices apart.
+# Spaces become underscores. Max 20 characters.
+# Leave empty to use the default (no prefix).
+
+deviceName=
+
+# ------------------------------------------------------------
+# Board Type
+# ------------------------------------------------------------
+# Overrides automatic chip detection for pin mapping.
+# auto = detect from chip model (default)
+# s3   = XIAO ESP32-S3
+# c5   = XIAO ESP32-C5 (required for 5 GHz scanning)
+# c6   = XIAO ESP32-C6
+# exp  = XIAO ESP32-S3 + Expansion Base
+# Reboot required after changing.
+
+board=auto
 
 # ------------------------------------------------------------
 # Mesh Mode On Boot
