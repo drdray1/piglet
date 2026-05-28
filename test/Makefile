@@ -1,6 +1,6 @@
 # Minimum-viable host-side test harness for Piglet.
-# See docs/TEST_PLAN.md for the full plan; this only covers what's on branch
-# improvements/mask-tokens-dedupe-single-pass.
+# See docs/TEST_PLAN.md for the full plan.
+# Builds with clang++ -std=c++17 — no Arduino toolchain required.
 
 CXX      ?= clang++
 CXXFLAGS ?= -std=c++17 -Wall -Wextra -Wno-unused-parameter -O0 -g
@@ -8,7 +8,7 @@ CXXFLAGS ?= -std=c++17 -Wall -Wextra -Wno-unused-parameter -O0 -g
 # shims rather than failing or pulling the real headers in.
 INCLUDES := -I stubs -I ../Arduino\ Files/Piglet -I .
 
-SOURCES := test_main.cpp test_scanner.cpp test_webui_masking.cpp test_wigle_upload.cpp
+SOURCES := test_main.cpp test_scanner.cpp test_webui_masking.cpp test_wigle_upload.cpp test_channel_classification.cpp
 BINARY  := tests.out
 
 .PHONY: test build clean

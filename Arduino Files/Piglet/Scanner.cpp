@@ -1,4 +1,5 @@
 #include "Scanner.h"
+#include "Scanner_channels.h"
 #include "Globals.h"
 #include "Config.h"
 #include "GPS.h"
@@ -34,9 +35,9 @@ static void processScanResults(int n) {
   uint32_t wrote = 0;
   for (int i = 0; i < n; i++) {
     int ch = WiFi.channel(i);
-    bool chUnknown = (ch == 0);
-    bool is2g = (ch >= 1 && ch <= 14) || chUnknown;
-    bool is5g = (ch >= 32 && ch <= 177);
+    ChannelBands b = classifyChannel(ch);
+    bool is2g = b.is2g;
+    bool is5g = b.is5g;
 
     if (!is2g) {
       if (!(wardriverIsC5() && is5g)) continue;
