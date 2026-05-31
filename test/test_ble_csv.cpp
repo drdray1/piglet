@@ -17,6 +17,20 @@ TEST_CASE("bleChannelToFreq: non-advertising channels yield 0") {
   CHECK(bleChannelToFreq(40) == 0u);
 }
 
+TEST_CASE("formatBda: 6 big-endian bytes -> AA:BB:CC:DD:EE:FF") {
+  const uint8_t bda[6] = {0xAA, 0xBB, 0xCC, 0x44, 0x55, 0x66};
+  char out[18];
+  formatBda(bda, out);
+  CHECK(std::string(out) == "AA:BB:CC:44:55:66");
+}
+
+TEST_CASE("formatBda: zero-pads single-digit octets") {
+  const uint8_t bda[6] = {0x01, 0x02, 0x00, 0x0F, 0xA0, 0x00};
+  char out[18];
+  formatBda(bda, out);
+  CHECK(std::string(out) == "01:02:00:0F:A0:00");
+}
+
 TEST_CASE("bleAddrTypeToString: NimBLE address-type codes") {
   CHECK(std::string(bleAddrTypeToString(0)) == "[LE Public]");
   CHECK(std::string(bleAddrTypeToString(1)) == "[LE Random]");

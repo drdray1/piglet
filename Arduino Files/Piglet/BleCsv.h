@@ -25,6 +25,15 @@ inline uint32_t bleChannelToFreq(int channel) {
   }
 }
 
+// Format 6 raw address bytes (big-endian, i.e. bda[0] is the most-significant
+// octet shown first) into "AA:BB:CC:DD:EE:FF". NimBLE delivers BDA bytes in LE
+// order, so the scanner reverses them before calling this; the JCMK mesh struct
+// stores them already big-endian. Output buffer must hold >= 18 bytes.
+inline void formatBda(const uint8_t bda[6], char out[18]) {
+  std::snprintf(out, 18, "%02X:%02X:%02X:%02X:%02X:%02X",
+                bda[0], bda[1], bda[2], bda[3], bda[4], bda[5]);
+}
+
 // NimBLE NimBLEAddress::getType() code -> WiGLE AuthMode string.
 //   0 = public, 1 = random static, 2 = resolvable private (RPA),
 //   3 = non-resolvable private (NRPA). Bracketed so WiGLE never confuses these
