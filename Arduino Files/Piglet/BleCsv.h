@@ -12,6 +12,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 
 // BLE primary advertising channel -> centre frequency in MHz.
@@ -32,6 +33,13 @@ inline uint32_t bleChannelToFreq(int channel) {
 inline void formatBda(const uint8_t bda[6], char out[18]) {
   std::snprintf(out, 18, "%02X:%02X:%02X:%02X:%02X:%02X",
                 bda[0], bda[1], bda[2], bda[3], bda[4], bda[5]);
+}
+
+// Inverse of formatBda: parse "AA:BB:CC:DD:EE:FF" (big-endian display order)
+// into 6 bytes. Caller must ensure `s` has at least 17 chars; out holds 6.
+inline void parseBda(const char* s, uint8_t out[6]) {
+  for (int i = 0; i < 6; i++)
+    out[i] = (uint8_t)std::strtoul(s + i * 3, nullptr, 16);
 }
 
 // NimBLE NimBLEAddress::getType() code -> WiGLE AuthMode string.

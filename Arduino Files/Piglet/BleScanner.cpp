@@ -35,12 +35,6 @@ struct Lock {
   ~Lock() { if (held) xSemaphoreGive(gMutex); }
 };
 
-// Parse "aa:bb:cc:dd:ee:ff" (NimBLE display order, big-endian) into 6 bytes.
-void parseBda(const char* s, uint8_t out[6]) {
-  for (int i = 0; i < 6; i++)
-    out[i] = (uint8_t)strtoul(s + i * 3, nullptr, 16);
-}
-
 // ---- NimBLE scan callback ----
 // RUNS IN THE NIMBLE HOST TASK. Do ONLY byte-copies + container ops under the
 // lock here: no SD, no WiFi, no HTTP, no Serial.printf (those take mutexes the
