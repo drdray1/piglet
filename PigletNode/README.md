@@ -2,7 +2,14 @@
 
 A minimal, standalone firmware for the **Seeed XIAO ESP32-C5** that turns it into a dedicated wardriving node for the Piglet platform.
 
-No display. No GPS. No SD card. Just plug it in, and it automatically pairs with any Piglet running in Core mode and starts scanning.
+No display. No GPS. No SD card. Just plug it in, and it automatically pairs with any Piglet running in Core mode and starts scanning **both Wi-Fi and BLE**, forwarding everything to the Core (which geotags and logs it).
+
+> **BLE is always on.** PigletNode passively scans Bluetooth LE alongside the
+> Wi-Fi sweep and forwards observations to the Core as ESP-Now type-6 frames.
+> Requires the **NimBLE-Arduino 2.1.x** library (Library Manager). The Core must
+> run a BLE-capable Piglet build to log them; older Cores ignore the frames.
+> The `Ble*.h` / `JcmkBle.h` headers here are copies of the main sketch's —
+> keep them in sync (the type-6 wire format must match the Core).
 
 ---
 

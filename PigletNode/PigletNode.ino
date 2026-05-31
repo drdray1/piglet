@@ -20,6 +20,23 @@
 #include <esp_now.h>
 #include "esp_wifi.h"
 
+// ---- BLE wardriving (always on) ----
+// These four headers are byte-identical copies of ../Arduino Files/Piglet/.
+// Arduino can't share files across sketch folders, so they're duplicated here.
+// KEEP IN SYNC — especially JcmkBle.h, whose 212-byte type-6 frame must match
+// the Core's exactly (a static_assert guards the size).
+#include "esp_coexist.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+#include <NimBLEDevice.h>
+#include <deque>
+#include <vector>
+#include <cstring>
+#include "BleCsv.h"       // formatBda / parseBda / normalizeBleUuid16
+#include "BleDedupe.h"    // per-device dedupe ring
+#include "BleScanner.h"   // BleObservation POD (the class itself is unused here)
+#include "JcmkBle.h"      // jcmk_ble_obs_msg_t (type 6) + jcmkBleBuild
+
 // ================================================================
 //  Board — XIAO ESP32-C5
 // ================================================================
@@ -353,6 +370,116 @@ static void scanTick() {
 }
 
 // ================================================================
+//  BLE wardriving — passive observer, forwards type-6 to the Core.
+//  Always on. Mirrors the main sketch's BleScanner + node forward path;
+//  reuses the pure helpers (dedupe, UUID normalize, type-6 build).
+// ================================================================
+static const uint16_t BLE_DURATION_S = 5;    // scan-window length
+static const uint16_t BLE_INTERVAL_S = 30;   // seconds between windows
+static const uint32_t BLE_DEDUPE_S   = 300;  // per-device dedupe window
+static const size_t   BLE_MAX        = 500;  // dedupe + pending cap
+
+static SemaphoreHandle_t          bleMutex      = nullptr;
+static BleDedupe*                 bleDedupe     = nullptr;
+static std::deque<BleObservation> blePending;
+static uint32_t                   bleSent       = 0;
+static uint32_t                   bleLifetime   = 0;
+static bool                       bleScanning   = false;
+static uint32_t                   bleScanEndsMs = 0;
+
+// RAII lock for the shared dedupe/FIFO (NimBLE host task vs loop task).
+struct BleLock {
+  bool held = false;
+  BleLock()  { if (bleMutex) held = (xSemaphoreTake(bleMutex, portMAX_DELAY) == pdTRUE); }
+  ~BleLock() { if (held) xSemaphoreGive(bleMutex); }
+};
+
+// Runs in the NimBLE host task — byte-copies only, no esp_now/Serial here.
+class PnBleObserver : public NimBLEScanCallbacks {
+public:
+  void onResult(const NimBLEAdvertisedDevice* dev) override {
+    if (!dev || !bleDedupe) return;
+    std::string a = dev->getAddress().toString();  // big-endian display order
+    if (a.size() < 17) return;
+    uint8_t bda[6]; parseBda(a.c_str(), bda);
+    uint8_t addrType = dev->getAddress().getType();
+    uint32_t now = millis();
+
+    BleLock lk;
+    if (!bleDedupe->shouldEmit(bda, addrType, now)) return;
+    bleLifetime++;
+    if (blePending.size() >= BLE_MAX) blePending.pop_front();
+
+    BleObservation o = {};
+    formatBda(bda, o.addr);
+    o.addrType     = addrType;
+    o.channel      = 37;     // NimBLE 2.x doesn't reliably report the adv channel
+    o.rssi         = (int8_t)dev->getRSSI();
+    o.observedAtMs = now;
+
+    std::string name = dev->getName();
+    std::strncpy(o.name, name.c_str(), sizeof(o.name) - 1);
+
+    if (dev->haveManufacturerData()) {
+      std::string md = dev->getManufacturerData();
+      if (md.size() >= 2)
+        o.mfgrId = (uint16_t)((uint8_t)md[0] | ((uint8_t)md[1] << 8));
+    }
+    if (dev->haveServiceUUID()) {
+      char* p = o.serviceUuids; size_t rem = sizeof(o.serviceUuids);
+      for (int i = 0; i < dev->getServiceUUIDCount() && rem > 5; i++) {
+        char uuid[5];
+        if (!normalizeBleUuid16(dev->getServiceUUID(i).toString(), uuid)) continue;
+        int n = std::snprintf(p, rem, "%s%s", (p == o.serviceUuids ? "" : ";"), uuid);
+        if (n < 0 || (size_t)n >= rem) break;
+        p += n; rem -= (size_t)n;
+      }
+    }
+    blePending.push_back(o);
+  }
+};
+static PnBleObserver bleObserver;
+
+static void bleBegin() {
+  if (!bleMutex)  bleMutex  = xSemaphoreCreateMutex();
+  if (!bleDedupe) bleDedupe = new BleDedupe(BLE_DEDUPE_S, BLE_MAX);
+  NimBLEDevice::init("pigletnode");
+  NimBLEDevice::setPower(ESP_PWR_LVL_P9);
+  NimBLEScan* scan = NimBLEDevice::getScan();
+  scan->setScanCallbacks(&bleObserver, /*wantDuplicates=*/false);
+  scan->setActiveScan(false);   // passive only (coex)
+  scan->setInterval(100);       // ms (NimBLE 2.x)
+  scan->setWindow(60);          // ms
+  Serial.println("[BLE] NimBLE observer initialised (always on)");
+}
+
+static void bleStartWindow() {
+  if (bleScanning) return;
+  esp_coex_preference_set(ESP_COEX_PREFER_BT);
+  NimBLEDevice::getScan()->start((uint32_t)BLE_DURATION_S * 1000UL, /*is_continue=*/false);
+  bleScanning   = true;
+  bleScanEndsMs = millis() + (uint32_t)BLE_DURATION_S * 1000UL;
+  Serial.printf("[BLE] scan window start (%u s)\n", (unsigned)BLE_DURATION_S);
+}
+
+static void bleTick() {
+  if (bleScanning && millis() >= bleScanEndsMs) {
+    esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
+    bleScanning = false;
+  }
+  if (bleDedupe) { BleLock lk; bleDedupe->expire(millis()); }
+}
+
+// Forward one observation to the Core as a 212-byte type-6 frame.
+static void sendBleObs(const BleObservation& o) {
+  jcmk_ble_obs_msg_t msg;
+  jcmkBleBuild(msg, o, ++hbCounter);
+  const uint8_t* dst = haveCore ? coreMac : JCMK_BCAST;
+  esp_now_send(dst, (uint8_t*)&msg, sizeof(msg));
+  bleSent++;
+}
+
+// ================================================================
 //  Main node tick — call every loop()
 // ================================================================
 static void nodeTick() {
@@ -394,8 +521,38 @@ static void nodeTick() {
     sendHeartbeat();
   }
 
-  // --- Channel scan (runs continuously once paired) ---
-  if (haveCore) scanTick();
+  // --- BLE scan + forward (always on, only while paired) ---
+  // Interleave a BLE window with the Wi-Fi sweep: open only when the sweep is
+  // idle, hold off the sweep while a window is active, return to ch 6 before
+  // forwarding. Node mode shares one radio across Wi-Fi hop + ESP-Now + BLE.
+  bool bleWin = false;
+  if (haveCore) {
+    static uint32_t lastBleMs = 0;
+    if (!bleScanning && !scanActive &&
+        (now - lastBleMs) >= (uint32_t)BLE_INTERVAL_S * 1000UL) {
+      bleStartWindow();
+      lastBleMs = now;
+    }
+    bleTick();
+    bleWin = bleScanning;
+
+    if (!bleWin) {
+      std::vector<BleObservation> obs;
+      {
+        BleLock lk;
+        while (!blePending.empty()) { obs.push_back(blePending.front()); blePending.pop_front(); }
+      }
+      if (!obs.empty()) {
+        setChannel(ESPNOW_CH);   // back to ch 6 before ESP-Now sends
+        for (const BleObservation& o : obs) sendBleObs(o);
+        Serial.printf("[BLE] forwarded %u obs (%lu total)\n",
+                      (unsigned)obs.size(), (unsigned long)bleSent);
+      }
+    }
+  }
+
+  // --- Channel scan (paused during a BLE window) ---
+  if (haveCore && !bleWin) scanTick();
 }
 
 // ================================================================
@@ -411,13 +568,15 @@ static void statusTick() {
                   (unsigned long)reqInterval);
   } else {
     Serial.printf("[NODE] Core %02X:%02X:%02X:%02X:%02X:%02X | "
-                  "ch %d-%d (v%d) | found %lu | sent %lu\n",
+                  "ch %d-%d (v%d) | wifi %lu/%lu | ble %lu (uniq %lu)\n",
       coreMac[0], coreMac[1], coreMac[2], coreMac[3], coreMac[4], coreMac[5],
       (startIdx < NUM_CHANNELS) ? CHANNELS[startIdx] : 0,
       (endIdx   < NUM_CHANNELS) ? CHANNELS[endIdx]   : 0,
       assignVer,
       (unsigned long)netFound,
-      (unsigned long)netSent);
+      (unsigned long)netSent,
+      (unsigned long)bleSent,
+      (unsigned long)bleLifetime);
   }
 }
 
@@ -497,6 +656,9 @@ void setup() {
       Serial.printf("[NODE] Channel after retry: %d\n", pri); }
   }
   addPeer(JCMK_BCAST);
+
+  // Bring up the BLE observer after ESP-Now so the coex layer arbitrates both.
+  bleBegin();
 
   // Random stagger (200-3000 ms) so multiple nodes don't flood the Core together
   uint32_t stagger = (uint32_t)(esp_random() % 2800) + 200;
