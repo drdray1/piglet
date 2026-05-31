@@ -15,6 +15,7 @@ Designed for **[Seeed XIAO ESP32-S3](https://wiki.seeedstudio.com/xiao_esp32s3_g
 
 - 2.4 GHz Wi-Fi scanning  
 - 5 GHz scanning on ESP32-C5 hardware  
+- **Bluetooth LE wardriving** — passive BLE scan logged to the same WiGLE CSV (`Type=BLE`); opt-in via `bleEnabled=true`. In mesh mode, Nodes forward BLE observations to the Core. Requires the NimBLE-Arduino library.
 - GPS position, heading, and speed logging  
 - SD card logging in WiGLE CSV format  
 - Web UI for:
@@ -369,6 +370,20 @@ meshModeOnBoot=none
 # Reboot required after changing.
 
 rotateScreen180=false
+
+# ------------------------------------------------------------
+# BLE Wardriving (optional)
+# ------------------------------------------------------------
+# Passively scan for Bluetooth LE devices alongside Wi-Fi and log them to the
+# same CSV with Type=BLE (WiGLE-1.6). Requires the NimBLE-Arduino library (see
+# Libraries below) and a reboot when changing bleEnabled. In mesh mode, Nodes
+# forward BLE observations to the Core, which logs them with its own GPS.
+
+bleEnabled=false
+bleScanDuration=5      # BLE scan-window length, seconds (1-10)
+bleScanInterval=30     # seconds between windows (forced >= duration + 5)
+bleDedupeWindow=300    # per-device dedupe, seconds (0 = log every advert)
+bleMaxResults=500      # dedupe/queue cap (100-2000)
 ```
 
 
