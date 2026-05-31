@@ -3,8 +3,11 @@
 #include "GPS.h"
 #include "SDUtils.h"
 #include "Scanner.h"
+#include "BleScanner.h"
+#include "JcmkBle.h"
 #include <esp_now.h>
 #include "esp_wifi.h"
+#include <vector>
 
 // ================================================================
 //  Protocol constants
@@ -77,6 +80,7 @@ uint8_t  jcmkEndIdx      = 0;
 uint8_t  jcmkAssignVer   = 0;
 uint32_t jcmkNetworksFound = 0;
 uint32_t jcmkSentCount   = 0;
+uint32_t jcmkBleSentCount = 0;   // BLE observations forwarded to the Core
 
 static uint32_t jcmkHbCounter   = 0;
 static uint32_t jcmkLastHbMs    = 0;
@@ -98,6 +102,7 @@ static uint8_t        jcmkCoreMacPending[6] = {0};
 // ================================================================
 bool         meshCoreActive = false;
 uint32_t     coreRecordsRx  = 0;
+uint32_t     coreBleRecordsRx = 0;   // BLE observations logged from nodes
 uint8_t      coreNodeCount  = 0;
 CoreNodeInfo coreNodes[CORE_MAX_NODES] = {};
 
@@ -120,6 +125,12 @@ static volatile uint8_t    coreReqHead = 0, coreReqTail = 0;
 
 static CorTextSlot         coreTextBuf[CORE_TEXT_QUEUE];
 static volatile uint8_t    coreTextHead = 0, coreTextTail = 0;
+
+// BLE observations from nodes (type 6). Parsed in the RX callback into POD
+// BleObservations (no alloc), drained + GPS-stamped + logged in coreModeTick.
+#define CORE_BLE_QUEUE  32
+static BleObservation      coreBleBuf[CORE_BLE_QUEUE];
+static volatile uint8_t    coreBleHead = 0, coreBleTail = 0;
 
 // ================================================================
 //  ESP-Now helpers
@@ -174,6 +185,17 @@ static void jcmkSendText(const String& s) {
   msg.text[slen] = '\0';
   // Always send full struct size — Biscuit Pro drops variable-length packets < 212 bytes.
   esp_now_send(JCMK_BCAST, (uint8_t*)&msg, sizeof(msg));
+}
+
+// Forward one BLE observation to the Core as a type-6 frame (212 bytes — legacy
+// Cores drop it cleanly). Unicast to the known Core MAC; the caller only invokes
+// this once linked. Built via the host-tested jcmkBleBuild().
+static void jcmkSendBleObs(const BleObservation& o) {
+  jcmk_ble_obs_msg_t msg;
+  jcmkBleBuild(msg, o, ++jcmkHbCounter);
+  const uint8_t* dst = jcmkHaveCore ? jcmkCoreMac : JCMK_BCAST;
+  esp_now_send(dst, (uint8_t*)&msg, sizeof(msg));
+  jcmkBleSentCount++;
 }
 
 // ================================================================
@@ -294,6 +316,34 @@ static void jcmkOnRecv(const esp_now_recv_info_t* info,
       for (uint8_t i = 0; i < CORE_MAX_NODES; i++) {
         if (coreNodes[i].active && memcmp(coreNodes[i].mac, info->src_addr, 6) == 0) {
           coreNodes[i].lastHbMs = millis();
+          found = true; break;
+        }
+      }
+      if (!found) {
+        uint8_t nxt = (coreReqTail + 1) % CORE_REQ_QUEUE;
+        if (nxt != coreReqHead) {
+          memcpy(coreReqBuf[coreReqTail].mac, info->src_addr, 6);
+          coreReqBuf[coreReqTail].isBiscuit = (len >= (int)sizeof(jcmk_text_msg_t));
+          coreReqTail = nxt;
+        }
+      }
+    } else if (type == JCMK_MSG_BLE_OBS && len >= (int)sizeof(jcmk_ble_obs_msg_t)) {
+      // BLE observation forwarded by a node (type 6). Parse into the BLE ring;
+      // logged + GPS-stamped in coreModeTick. Keyed on type, so legacy peers'
+      // packets never reach here.
+      const jcmk_ble_obs_msg_t* bm = (const jcmk_ble_obs_msg_t*)data;
+      uint8_t next = (coreBleTail + 1) % CORE_BLE_QUEUE;
+      if (next != coreBleHead) {
+        jcmkBleParse(*bm, coreBleBuf[coreBleTail]);
+        coreBleTail = next;
+      }
+      // Touch the node (heartbeat + per-node count), register if unknown —
+      // same pattern as the TEXT path.
+      bool found = false;
+      for (uint8_t i = 0; i < CORE_MAX_NODES; i++) {
+        if (coreNodes[i].active && memcmp(coreNodes[i].mac, info->src_addr, 6) == 0) {
+          coreNodes[i].lastHbMs = millis();
+          coreNodes[i].recordsRx++;
           found = true; break;
         }
       }
@@ -464,6 +514,21 @@ static void coreParseAndLogText(const char* line) {
   coreRecordsRx++;
 }
 
+// Log a node-forwarded BLE observation to the Core's CSV. The Core stamps it
+// with its OWN GPS + time (the node has neither) — identical to the Wi-Fi path.
+static void coreLogBleObs(const BleObservation& o) {
+  double lat = 0, lon = 0, altM = 0, accM = 0;
+  if (gpsHasFix) {
+    lat  = gps.location.lat();
+    lon  = gps.location.lng();
+    altM = gps.altitude.meters();
+    accM = gps.hdop.hdop();
+  }
+  appendBleRow(o.addr, o.name, o.addrType, iso8601NowUTC(), o.channel, o.rssi,
+               lat, lon, altM, accM, o.serviceUuids, o.mfgrId);
+  coreBleRecordsRx++;
+}
+
 // ================================================================
 //  Per-channel async scan (JCMK startNextNodeAssignedScan pattern).
 //  Scans one assigned channel per call at NODE_SCAN_DWELL_MS dwell,
@@ -546,6 +611,7 @@ void enterNodeMode() {
   jcmkCoreFoundPending  = false;
   jcmkNetworksFound     = 0;
   jcmkSentCount         = 0;
+  jcmkBleSentCount      = 0;
   jcmkHbCounter         = 0;
   jcmkLastHbMs          = 0;
   jcmkLastReqMs         = 0;
@@ -601,6 +667,12 @@ void enterNodeMode() {
   // Prevents multiple nodes starting cycles in sync and flooding simultaneously.
   delay(random(200, 3000));
 
+#if PIGLET_HAS_BLE
+  // Bring up the BLE observer after ESP-Now so the coex layer arbitrates both.
+  // Node-mode BLE/ESP-Now coexistence is the tightest case — validate on hw.
+  if (cfg.bleEnabled) bleScanner.begin();
+#endif
+
   meshNodeActive = true;
   Serial.println("[MESH] ESP-Now ready — searching for Core on ch 6...");
 }
@@ -633,6 +705,7 @@ void enterCoreMode() {
 
   meshCoreActive = false;
   coreRecordsRx  = 0;
+  coreBleRecordsRx = 0;
   coreNodeCount  = 0;
   coreAssignVer  = 0;
   coreHbCounter  = 0;
@@ -711,6 +784,13 @@ void coreModeTick() {
     coreParseAndLogText(coreTextBuf[i].line);
   }
 
+  // 2b. Process pending BLE observations from nodes (type 6)
+  while (coreBleHead != coreBleTail) {
+    uint8_t i = coreBleHead;
+    coreBleHead = (coreBleHead + 1) % CORE_BLE_QUEUE;
+    coreLogBleObs(coreBleBuf[i]);
+  }
+
   // 3. Periodic heartbeat + ADMIN refresh to all connected nodes.
   // Nodes that missed the ADMIN while scanning will recover within one cycle.
   if (now - coreLastHbMs >= CORE_HB_MS) {
@@ -768,8 +848,40 @@ void nodeModeTick() {
     jcmkSendHeartbeat();
   }
 
+#if PIGLET_HAS_BLE
+  // ---- BLE scanning (node mode) ----
+  // Interleave a BLE window with the Wi-Fi channel sweeps. Node mode is the
+  // tightest radio scenario (per-channel Wi-Fi hop + ESP-Now on ch 6 + BLE on
+  // the shared 2.4 GHz front-end), so we only open a window when the Wi-Fi scan
+  // is idle, and we hold off the Wi-Fi sweep while a window is active. After the
+  // window we return the radio to ch 6 before forwarding to the Core.
+  bool bleWindowActive = false;
+  if (jcmkHaveCore && cfg.bleEnabled && bleScanner.ready()) {
+    static uint32_t lastNodeBleMs = 0;
+    if (!bleScanner.isScanning() && !nodeScanActive &&
+        (now - lastNodeBleMs) >= (uint32_t)cfg.bleScanInterval * 1000UL) {
+      bleScanner.startScan();
+      lastNodeBleMs = now;
+    }
+    bleScanner.tick();
+    bleWindowActive = bleScanner.isScanning();
+
+    if (!bleWindowActive) {
+      std::vector<BleObservation> obs;
+      if (bleScanner.consumeResults(obs) > 0) {
+        jcmkSetChannel(JCMK_ESPNOW_CH);   // back to ch 6 before ESP-Now sends
+        for (const BleObservation& o : obs) jcmkSendBleObs(o);
+      }
+    }
+  }
+
+  // Per-channel async scan — runs continuously while connected to Core, but not
+  // during a BLE window (active Wi-Fi scan would starve BLE of coex airtime).
+  if (jcmkHaveCore && !bleWindowActive) nodeDoScanTick();
+#else
   // Per-channel async scan — runs continuously while connected to Core
   if (jcmkHaveCore) nodeDoScanTick();
+#endif
 }
 
 // ================================================================
@@ -828,10 +940,16 @@ void drawPageMeshNode() {
       display.setCursor(0, 35); display.print("--:--:-- ------");
     }
 
-    // Row 4 (y=44): total records received
+    // Row 4 (y=44): total records received (Wi-Fi, + BLE when enabled)
     display.setCursor(0, 44);
-    char rbuf[22];
-    snprintf(rbuf, sizeof(rbuf), "Rcvd: %lu", (unsigned long)coreRecordsRx);
+    char rbuf[28];
+    // Show the BLE tally whenever this Core has logged any forwarded BLE rows
+    // (a Core aggregates type-6 even if it isn't scanning BLE itself).
+    if (cfg.bleEnabled || coreBleRecordsRx > 0)
+      snprintf(rbuf, sizeof(rbuf), "Rx:%lu BLE:%lu",
+               (unsigned long)coreRecordsRx, (unsigned long)coreBleRecordsRx);
+    else
+      snprintf(rbuf, sizeof(rbuf), "Rcvd: %lu", (unsigned long)coreRecordsRx);
     display.print(rbuf);
 
     // Row 5 (y=53): GPS + hint
@@ -883,10 +1001,17 @@ void drawPageMeshNode() {
     display.print("ENOW:");
     display.print(JCMK_ESPNOW_CH);
 
-    // Row 4 (y=44): networks found
+    // Row 4 (y=44): networks found (+ BLE forwarded when enabled)
     display.setCursor(0, 44);
     display.print("Found:");
     display.print(jcmkNetworksFound);
+#if PIGLET_HAS_BLE
+    if (cfg.bleEnabled) {
+      display.setCursor(72, 44);
+      display.print("B:");
+      display.print(jcmkBleSentCount);
+    }
+#endif
 
     // Row 5 (y=53): records sent + hint
     display.setCursor(0, 53);
