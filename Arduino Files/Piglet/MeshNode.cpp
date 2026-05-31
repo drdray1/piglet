@@ -785,11 +785,16 @@ void coreModeTick() {
   }
 
   // 2b. Process pending BLE observations from nodes (type 6)
+  uint8_t bleDrained = 0;
   while (coreBleHead != coreBleTail) {
     uint8_t i = coreBleHead;
     coreBleHead = (coreBleHead + 1) % CORE_BLE_QUEUE;
     coreLogBleObs(coreBleBuf[i]);
+    bleDrained++;
   }
+  if (bleDrained)
+    Serial.printf("[CORE] logged %u BLE rows (%lu total)\n",
+                  bleDrained, (unsigned long)coreBleRecordsRx);
 
   // 3. Periodic heartbeat + ADMIN refresh to all connected nodes.
   // Nodes that missed the ADMIN while scanning will recover within one cycle.
@@ -871,6 +876,8 @@ void nodeModeTick() {
       if (bleScanner.consumeResults(obs) > 0) {
         jcmkSetChannel(JCMK_ESPNOW_CH);   // back to ch 6 before ESP-Now sends
         for (const BleObservation& o : obs) jcmkSendBleObs(o);
+        Serial.printf("[MESH] forwarded %u BLE obs (%lu total)\n",
+                      (unsigned)obs.size(), (unsigned long)jcmkBleSentCount);
       }
     }
   }
