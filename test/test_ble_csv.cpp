@@ -31,6 +31,34 @@ TEST_CASE("formatBda: zero-pads single-digit octets") {
   CHECK(std::string(out) == "01:02:00:0F:A0:00");
 }
 
+TEST_CASE("normalizeBleUuid16: NimBLE 0x-prefixed short forms -> 4-hex upper") {
+  char out[5];
+  // The exact bug seen on hardware: "0xfe9f" was truncated to "0xfe".
+  CHECK(normalizeBleUuid16("0xfe9f", out)); CHECK(std::string(out) == "FE9F");
+  CHECK(normalizeBleUuid16("0x180f", out)); CHECK(std::string(out) == "180F");
+  CHECK(normalizeBleUuid16("0xfe", out));   CHECK(std::string(out) == "00FE");
+  CHECK(normalizeBleUuid16("0x18", out));   CHECK(std::string(out) == "0018");
+}
+
+TEST_CASE("normalizeBleUuid16: bare hex and uppercase prefix") {
+  char out[5];
+  CHECK(normalizeBleUuid16("57b4", out)); CHECK(std::string(out) == "57B4");
+  CHECK(normalizeBleUuid16("0X6BA1", out)); CHECK(std::string(out) == "6BA1");
+}
+
+TEST_CASE("normalizeBleUuid16: 128-bit base alias yields its 16-bit value") {
+  char out[5];
+  CHECK(normalizeBleUuid16("0000fe9f-0000-1000-8000-00805f9b34fb", out));
+  CHECK(std::string(out) == "FE9F");
+}
+
+TEST_CASE("normalizeBleUuid16: genuine 128-bit custom UUID is skipped") {
+  char out[5];
+  CHECK_FALSE(normalizeBleUuid16("12345678-1234-1234-1234-1234567890ab", out));
+  CHECK_FALSE(normalizeBleUuid16("", out));
+  CHECK_FALSE(normalizeBleUuid16("0x", out));       // no digits
+}
+
 TEST_CASE("bleAddrTypeToString: NimBLE address-type codes") {
   CHECK(std::string(bleAddrTypeToString(0)) == "[LE Public]");
   CHECK(std::string(bleAddrTypeToString(1)) == "[LE Random]");

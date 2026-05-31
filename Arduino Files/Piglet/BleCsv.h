@@ -68,6 +68,33 @@ inline std::string bleCsvEscapeQuotes(const std::string& in) {
   return out;
 }
 
+// Normalize a NimBLE service-UUID string to a 4-hex-digit UPPERCASE 16-bit UUID
+// for the RCOIs column. NimBLE's NimBLEUUID::toString() can yield "0xfe9f",
+// "0x180f", a bare "57b4", or the canonical 128-bit base alias
+// "0000fe9f-0000-1000-8000-00805f9b34fb". Writes e.g. "FE9F" to out (size >= 5)
+// and returns true; returns false (caller skips) for genuine 128-bit UUIDs,
+// which are not 16-bit RCOIs.
+inline bool normalizeBleUuid16(const std::string& in, char out[5]) {
+  uint32_t v;
+  if (in.size() == 36 && in[8] == '-') {
+    // 128-bit canonical: only the Bluetooth base alias carries a 16-bit value.
+    if (in.compare(0, 4, "0000") == 0 &&
+        in.compare(8, 28, "-0000-1000-8000-00805f9b34fb") == 0)
+      v = (uint32_t)std::strtoul(in.substr(4, 4).c_str(), nullptr, 16);
+    else
+      return false;  // real 128-bit custom UUID — not a 16-bit RCOI
+  } else {
+    const char* p = in.c_str();
+    if (in.rfind("0x", 0) == 0 || in.rfind("0X", 0) == 0) p += 2;  // strip prefix
+    char* end = nullptr;
+    unsigned long parsed = std::strtoul(p, &end, 16);
+    if (end == p || parsed > 0xFFFF) return false;
+    v = (uint32_t)parsed;
+  }
+  std::snprintf(out, 5, "%04X", (unsigned)v);
+  return true;
+}
+
 // Build one WigleWifi-1.6 CSV row for a BLE observation. Column order matches
 // the header emitted in SDUtils.cpp::openLogFile():
 //   MAC,SSID,AuthMode,FirstSeen,Channel,Frequency,RSSI,

@@ -78,11 +78,12 @@ public:
     if (dev->haveServiceUUID()) {
       char* p = o.serviceUuids;
       size_t rem = sizeof(o.serviceUuids);
-      for (int i = 0; i < dev->getServiceUUIDCount() && rem > 6; i++) {
-        std::string s = dev->getServiceUUID(i).toString();
-        if (s.size() > 4) s = s.substr(0, 4);  // 16-bit short form only
+      for (int i = 0; i < dev->getServiceUUIDCount() && rem > 5; i++) {
+        char uuid[5];
+        // Keep only 16-bit UUIDs, normalised to 4-hex uppercase (e.g. FE9F).
+        if (!normalizeBleUuid16(dev->getServiceUUID(i).toString(), uuid)) continue;
         int n = std::snprintf(p, rem, "%s%s", (p == o.serviceUuids ? "" : ";"),
-                              s.c_str());
+                              uuid);
         if (n < 0 || (size_t)n >= rem) break;
         p += n; rem -= (size_t)n;
       }
