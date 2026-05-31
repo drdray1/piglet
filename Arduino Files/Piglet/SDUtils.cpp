@@ -334,4 +334,6 @@ void writeBleRowsFromObs(const std::vector<BleObservation>& obs) {
                  lat, lon, altM, accM, o.serviceUuids, o.mfgrId);
   }
   if (logFile) logFile.flush();
+  Serial.printf("[BLE] logged %u observation(s)%s\n", (unsigned)obs.size(),
+                gpsHasFix ? "" : " (no GPS fix)");
 }

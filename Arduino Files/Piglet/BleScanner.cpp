@@ -131,6 +131,7 @@ void BleScanner::startScan() {
   NimBLEDevice::getScan()->start(durMs, /*is_continue=*/false);
   scanRunning_  = true;
   scanEndsAtMs_ = millis() + (uint32_t)cfg.bleScanDuration * 1000UL;
+  Serial.printf("[BLE] scan window start (%u s)\n", (unsigned)cfg.bleScanDuration);
 }
 
 void BleScanner::stopScan() {
@@ -154,16 +155,25 @@ size_t BleScanner::consumeResults(std::vector<BleObservation>& out) {
 void BleScanner::tick() {
   // Window expiry — NimBLE has already stopped on its own timer; just restore
   // the coex preference and clear our flag.
+  bool windowEnded = false;
   if (scanRunning_ && millis() >= scanEndsAtMs_) {
     esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
     scanRunning_ = false;
+    windowEnded = true;
   }
 
-  // Prune stale dedupe entries to bound memory.
+  // Prune stale dedupe entries to bound memory; snapshot counts under the lock.
+  uint32_t life = 0; size_t tracked = 0;
   if (gDedupe) {
     Lock lk;
     gDedupe->expire(millis());
+    life = gLifetimeUnique;
+    tracked = gDedupe->size();
   }
+
+  if (windowEnded)
+    Serial.printf("[BLE] window end — %u unique lifetime, %u tracked\n",
+                  (unsigned)life, (unsigned)tracked);
 }
 
 uint32_t BleScanner::lifetimeUniqueCount() const {
