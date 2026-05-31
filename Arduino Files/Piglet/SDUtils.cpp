@@ -1,6 +1,8 @@
 #include "SDUtils.h"
 #include "Globals.h"
+#include "GPS.h"
 #include "BleCsv.h"
+#include "BleScanner.h"
 
 static void writeCsvLine(const String& line);
 
@@ -311,4 +313,25 @@ void appendBleRow(const String& bda, const String& name, uint8_t addrType,
                                   firstSeen.c_str(), channel, rssi, lat, lon,
                                   altM, accM, serviceUuids.c_str(), mfgrId);
   writeCsvLine(String(line.c_str()));
+}
+
+void writeBleRowsFromObs(const std::vector<BleObservation>& obs) {
+  if (obs.empty() || !sdOk || !logFile) return;
+
+  // One GPS snapshot for the whole batch (doc §9 Option A). A BLE window is a
+  // few seconds; at wardriving speeds the position drift is below GPS accuracy.
+  String firstSeen = iso8601NowUTC();
+  double lat = 0, lon = 0, altM = 0, accM = 0;
+  if (gpsHasFix) {
+    lat  = gps.location.lat();
+    lon  = gps.location.lng();
+    altM = gps.altitude.meters();
+    accM = gps.hdop.hdop();
+  }
+
+  for (const BleObservation& o : obs) {
+    appendBleRow(o.addr, o.name, o.addrType, firstSeen, o.channel, o.rssi,
+                 lat, lon, altM, accM, o.serviceUuids, o.mfgrId);
+  }
+  if (logFile) logFile.flush();
 }

@@ -32,6 +32,7 @@
 #include "Display.h"
 #include "WiFiManager.h"
 #include "Scanner.h"
+#include "BleScanner.h"
 #include "WigleUpload.h"
 #include "WebUI.h"
 #include "MeshNode.h"
@@ -502,6 +503,14 @@ void setup() {
     }
   }
 
+  // Initialise BLE for solo wardriving (not when booting straight into mesh —
+  // node-mode BLE coexistence with ESP-Now is handled separately in MeshNode).
+#if PIGLET_HAS_BLE
+  if (cfg.bleEnabled && currentPage != 5) {
+    bleScanner.begin();
+  }
+#endif
+
   updateOLED(0);
 
   Serial.println("=== Boot complete ===");
@@ -625,9 +634,37 @@ void loop() {
     }
     allowScanForOled = allowScan;
 
+#if PIGLET_HAS_BLE
+    // ---- BLE scheduling (solo mode) ----
+    // Insert a BLE window every cfg.bleScanInterval seconds, time-sliced with the
+    // Wi-Fi sweeps. While a BLE window is active we hold off starting a new Wi-Fi
+    // scan (active Wi-Fi scan would starve BLE of coex airtime), and we never
+    // start a BLE window mid Wi-Fi sweep.
+    bool bleWindowActive = false;
+    if (cfg.bleEnabled && bleScanner.ready() && allowScan) {
+      static uint32_t lastBleStartMs = 0;
+      if (!bleScanner.isScanning() &&
+          (millis() - lastBleStartMs) >= (uint32_t)cfg.bleScanInterval * 1000UL &&
+          WiFi.scanComplete() != WIFI_SCAN_RUNNING) {
+        bleScanner.startScan();
+        lastBleStartMs = millis();
+      }
+      bleScanner.tick();
+      bleWindowActive = bleScanner.isScanning();
+
+      std::vector<BleObservation> obs;
+      if (bleScanner.consumeResults(obs) > 0) {
+        writeBleRowsFromObs(obs);
+      }
+    }
+    if (allowScan && !bleWindowActive) {
+      doScanOnce();
+    }
+#else
     if (allowScan) {
       doScanOnce();
     }
+#endif
   }
 
   // Battery test tick (uncomment to enable)
