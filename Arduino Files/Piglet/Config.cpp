@@ -126,6 +126,39 @@ void cfgAssignKV(const String& k, const String& v) {
     String vv = v; vv.toLowerCase();
     cfg.rotateScreen180 = (vv == "true" || vv == "1");
   }
+  else if (k == "bleEnabled") {
+    String vv = v; vv.toLowerCase();
+    cfg.bleEnabled = (vv == "true" || vv == "1");
+  }
+  else if (k == "bleScanDuration") {
+    int n = v.toInt();
+    if (n >= 1 && n <= 10) cfg.bleScanDuration = (uint16_t)n;
+  }
+  else if (k == "bleScanInterval") {
+    int n = v.toInt();
+    // Cross-field minimum enforced in validateConfig(); accept any sane value here.
+    if (n >= 5 && n <= 300) cfg.bleScanInterval = (uint16_t)n;
+  }
+  else if (k == "bleDedupeWindow") {
+    long n = v.toInt();
+    if (n >= 0 && n <= 86400) cfg.bleDedupeWindow = (uint32_t)n;
+  }
+  else if (k == "bleMaxResults") {
+    int n = v.toInt();
+    if (n >= 100 && n <= 2000) cfg.bleMaxResults = (uint16_t)n;
+  }
+}
+
+// Clamp cross-field / out-of-range constraints that single-key parsing in
+// cfgAssignKV can't see. Idempotent and safe to call on default config.
+void validateConfig() {
+  if (cfg.bleScanDuration < 1)  cfg.bleScanDuration = 1;
+  if (cfg.bleScanDuration > 10) cfg.bleScanDuration = 10;
+  if (cfg.bleScanInterval < (uint16_t)(cfg.bleScanDuration + 5))
+    cfg.bleScanInterval = (uint16_t)(cfg.bleScanDuration + 5);
+  if (cfg.bleDedupeWindow > 86400) cfg.bleDedupeWindow = 86400;
+  if (cfg.bleMaxResults < 100)  cfg.bleMaxResults = 100;
+  if (cfg.bleMaxResults > 2000) cfg.bleMaxResults = 2000;
 }
 
 // ---------------- Load / Save ----------------
@@ -162,10 +195,12 @@ bool loadConfigFromSD() {
     Serial.print("      gpsBaud:       "); Serial.println(cfg.gpsBaud);
     Serial.print("      scanMode:      "); Serial.println(cfg.scanMode);
     Serial.print("      wigle token:   "); Serial.println(cfg.wigleBasicToken.length() ? "(set)" : "(empty)");
+    validateConfig();
     return true;
   }
 
   Serial.println("[CFG] No /wardriver.cfg. Using defaults.");
+  validateConfig();
   return false;
 }
 
@@ -253,6 +288,20 @@ bool saveConfigToSD() {
   f.println("");
   f.println("# Rotate screen 180 degrees (true = upside-down mount). Requires reboot.");
   f.print("rotateScreen180="); f.println(cfg.rotateScreen180 ? "true" : "false");
+
+  f.println("");
+  f.println("# ---- BLE Wardriving (optional) ----");
+  f.println("# Passively scan for Bluetooth LE devices alongside Wi-Fi and log");
+  f.println("# them to the same CSV with Type=BLE. Requires reboot if changing bleEnabled.");
+  f.print("bleEnabled=");      f.println(cfg.bleEnabled ? "true" : "false");
+  f.println("# BLE scan-window duration (s). 1-10.");
+  f.print("bleScanDuration="); f.println(cfg.bleScanDuration);
+  f.println("# Time between BLE scan windows (s). Forced to >= bleScanDuration + 5.");
+  f.print("bleScanInterval="); f.println(cfg.bleScanInterval);
+  f.println("# Per-device dedupe window (s). 0 = log every advert. Max 86400.");
+  f.print("bleDedupeWindow="); f.println(cfg.bleDedupeWindow);
+  f.println("# Dedupe ring + pending FIFO cap (memory knob). 100-2000.");
+  f.print("bleMaxResults=");   f.println(cfg.bleMaxResults);
 
   f.flush();
   f.close();

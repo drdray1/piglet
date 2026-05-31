@@ -42,6 +42,20 @@ struct Config {
   // Rotate the OLED display 180° (true = upside-down mount, false = normal).
   // Requires reboot to take effect.
   bool rotateScreen180 = false;
+
+  // ---- BLE wardriving (see piglet_bluetooth_implementation.md) ----
+  // Master enable. When false the NimBLE stack is never initialised, so there
+  // is no flash/RAM cost beyond this bool. Requires reboot to change.
+  bool     bleEnabled      = false;
+  // BLE scan-window duration (s). Clamped to 1–10 to avoid starving Wi-Fi.
+  uint16_t bleScanDuration = 5;
+  // Time between BLE scan-window starts (s). Forced >= bleScanDuration + 5.
+  uint16_t bleScanInterval = 30;
+  // Per-device dedupe window (s). A device seen within this window is not
+  // logged again. 0 = log every advert (debug); clamped to <= 86400.
+  uint32_t bleDedupeWindow = 300;
+  // Cap on the dedupe ring + pending-result FIFO size (memory knob). 100–2000.
+  uint16_t bleMaxResults   = 500;
 };
 
 const PinMap& detectPinsByChip();
@@ -51,5 +65,6 @@ bool wardriverIsC5();
 String trimCopy(String s);
 bool parseKeyValueLine(const String& lineIn, String& keyOut, String& valOut);
 void cfgAssignKV(const String& k, const String& v);
+void validateConfig();   // clamp cross-field constraints after a load
 bool loadConfigFromSD();
 bool saveConfigToSD();

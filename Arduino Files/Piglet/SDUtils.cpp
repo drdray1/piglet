@@ -1,5 +1,8 @@
 #include "SDUtils.h"
 #include "Globals.h"
+#include "BleCsv.h"
+
+static void writeCsvLine(const String& line);
 
 // ---- Path helpers ----
 
@@ -248,6 +251,16 @@ void appendWigleRow(const String& mac, const String& ssid, const String& auth,
   line += String(accM, 1); line += ",";
   line += ",0,WIFI"; // RCOIs (empty), MfgrId (0), Type
 
+  writeCsvLine(line);
+}
+
+// Shared row writer: handles silent-write-failure recovery and the throttled
+// flush cadence for every CSV row, whatever its Type. Both appendWigleRow and
+// appendBleRow funnel through here so they share one flush timer (they write to
+// the same file) and one recovery path.
+static void writeCsvLine(const String& line) {
+  if (!sdOk || !logFile) return;
+
   size_t written = logFile.println(line);
 
   // Detect silent write failure — if println() returns 0 for a non-empty line,
@@ -284,4 +297,18 @@ void appendWigleRow(const String& mac, const String& ssid, const String& auth,
     lastFlushMs = nowMs;
     linesSinceFlush = 0;
   }
+}
+
+void appendBleRow(const String& bda, const String& name, uint8_t addrType,
+                  const String& firstSeen, int channel, int rssi,
+                  double lat, double lon, double altM, double accM,
+                  const String& serviceUuids, uint16_t mfgrId) {
+  if (!sdOk || !logFile) return;
+
+  // Format through the shared, host-tested formatter so the on-disk layout
+  // matches test/test_ble_csv.cpp exactly. std::string in, Arduino String out.
+  std::string line = formatBleRow(bda.c_str(), name.c_str(), addrType,
+                                  firstSeen.c_str(), channel, rssi, lat, lon,
+                                  altM, accM, serviceUuids.c_str(), mfgrId);
+  writeCsvLine(String(line.c_str()));
 }

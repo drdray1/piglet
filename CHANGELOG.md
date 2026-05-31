@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### BLE wardriving — foundation (phase 1)
+
+- WiGLE-1.6 BLE CSV writer: new `appendBleRow()` emits `Type=BLE` rows into the
+  same log as Wi-Fi, with the BLE channel→frequency map (37/38/39 → 2402/2426/2480),
+  `[LE Public|Random|Resolvable|NonResolvable]` AuthMode, service UUIDs in RCOIs,
+  and the LE-decoded company id in MfgrId. Row formatting lives in the pure,
+  host-tested `BleCsv.h`; the Wi-Fi and BLE writers now share one
+  `writeCsvLine()` flush/recovery path.
+- New config keys (persisted in `wardriver.cfg`): `bleEnabled`, `bleScanDuration`,
+  `bleScanInterval`, `bleDedupeWindow`, `bleMaxResults`, plus a `validateConfig()`
+  pass that clamps cross-field constraints on load.
+- Host-side tests (`test/test_ble_csv.cpp`) pin the BLE row layout and helpers.
+
+NimBLE scanning + loop integration land in a later phase; with `bleEnabled=false`
+(default) there is no behavioural or memory change.
+
 ## v2.52 (2026-05-28)
 
 Summary entry — the per-release changelog between v1.3-beta and v2.52
