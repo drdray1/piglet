@@ -4,7 +4,28 @@
 #include "Config.h"
 #include "SDUtils.h"
 #include "MeshNode.h"
+#include "BleScanner.h"
 #include <math.h>
+
+// BLE count to show on the Status / Networks pages, picked by mode:
+// Core aggregates node BLE (coreBleRecordsRx); solo shows locally-scanned uniques.
+static uint32_t bleDisplayCount() {
+  if (meshCoreActive) return coreBleRecordsRx;
+#if PIGLET_HAS_BLE
+  if (cfg.bleEnabled && bleScanner.ready()) return bleScanner.lifetimeUniqueCount();
+#endif
+  return 0;
+}
+
+// Whether a BLE figure is meaningful here (Core always; solo only when enabled).
+static bool bleDisplayActive() {
+  if (meshCoreActive) return true;
+#if PIGLET_HAS_BLE
+  return cfg.bleEnabled && bleScanner.ready();
+#else
+  return false;
+#endif
+}
 
 // ---- Splash slogans ----
 
@@ -598,6 +619,13 @@ static void drawPageStatus(float speedValue) {
     display.print(networksFound5G);
   }
 
+  // BLE shares the 5G row — right half on C5, full row otherwise. No layout shift.
+  if (bleDisplayActive()) {
+    display.setCursor(wardriverIsC5() ? 66 : 0, yLine5g);
+    display.print("BLE:");
+    display.print(bleDisplayCount());
+  }
+
   // Speed (always at same place)
   display.setCursor(0, yLineSpd);
   display.print("Speed: ");
@@ -725,13 +753,20 @@ static void drawPageNetworks() {
   display.setCursor(36, 32);
   display.print(networksFound5G);
 
-  // Total
+  // Third row: BLE count when BLE is active, else the Wi-Fi total.
   display.setTextSize(1);
   display.setCursor(0, 50);
-  display.print("Total:");
-  display.setTextSize(2);
-  display.setCursor(36, 48);
-  display.print(networksFound2G + networksFound5G);
+  if (bleDisplayActive()) {
+    display.print("BLE:");
+    display.setTextSize(2);
+    display.setCursor(36, 48);
+    display.print(bleDisplayCount());
+  } else {
+    display.print("Total:");
+    display.setTextSize(2);
+    display.setCursor(36, 48);
+    display.print(networksFound2G + networksFound5G);
+  }
 
   display.display();
 }
