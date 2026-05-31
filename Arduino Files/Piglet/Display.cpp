@@ -583,11 +583,14 @@ static void drawPageStatus(float speedValue) {
     return;
   }
 
-  // Normal status lines (FIXED ROWS so layout doesn't shift by board)
+  // Normal status lines (FIXED ROWS so layout doesn't shift by board).
+  // Six rows at 8 px spacing (16..56) to fit a dedicated BLE row between 5G
+  // and Speed without pushing the bottom row off-screen.
   const int yLine2g   = OLED_YELLOW_H + 0;   // 16
-  const int yLine5g   = OLED_YELLOW_H + 10;  // 26 (reserved even if not C5)
-  const int yLineSpd  = OLED_YELLOW_H + 20;  // 36
-  const int yLineSD   = OLED_YELLOW_H + 30;  // 46
+  const int yLine5g   = OLED_YELLOW_H + 8;   // 24 (reserved even if not C5)
+  const int yLineBle  = OLED_YELLOW_H + 16;  // 32
+  const int yLineSpd  = OLED_YELLOW_H + 24;  // 40
+  const int yLineSD   = OLED_YELLOW_H + 32;  // 48
   const int yBottom   = OLED_YELLOW_H + 40;  // 56
 
   // 2.4G (always)
@@ -619,10 +622,10 @@ static void drawPageStatus(float speedValue) {
     display.print(networksFound5G);
   }
 
-  // BLE shares the 5G row — right half on C5, full row otherwise. No layout shift.
+  // BLE — own row, below 5G and above Speed.
   if (bleDisplayActive()) {
-    display.setCursor(wardriverIsC5() ? 66 : 0, yLine5g);
-    display.print("BLE:");
+    display.setCursor(0, yLineBle);
+    display.print("BLE: ");
     display.print(bleDisplayCount());
   }
 
