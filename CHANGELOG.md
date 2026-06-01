@@ -1,5 +1,44 @@
 # Changelog
 
+## Unreleased
+
+### BLE wardriving (opt-in via `bleEnabled`)
+
+Passive Bluetooth LE wardriving alongside Wi-Fi, solo and across a mesh cluster.
+With `bleEnabled=false` (default) there is no behavioural or memory change, and
+no NimBLE dependency.
+
+**CSV / format**
+- WiGLE-1.6 BLE rows: `appendBleRow()` emits `Type=BLE` into the same log as
+  Wi-Fi — channel→frequency (37/38/39 → 2402/2426/2480),
+  `[LE Public|Random|Resolvable|NonResolvable]` AuthMode, service UUIDs in RCOIs,
+  LE-decoded company id in MfgrId. Pure, host-tested `BleCsv.h`; Wi-Fi and BLE
+  writers share one `writeCsvLine()` flush/recovery path. Uploads to WiGLE and
+  WDGoWars (and the merged-gzip download) carry BLE rows unchanged.
+
+**Scanning**
+- `BleScanner` (NimBLE-Arduino 2.x, observer-only, passive) with a host-tested
+  dedupe ring (`BleDedupe.h`) and a bounded hand-off FIFO. Coex set to prefer BLE
+  during a window. Solo mode time-slices BLE windows with the Wi-Fi sweep.
+- Config keys (persisted in `wardriver.cfg`): `bleEnabled`, `bleScanDuration`,
+  `bleScanInterval`, `bleDedupeWindow`, `bleMaxResults`; `validateConfig()` clamps
+  cross-field constraints on load.
+
+**Mesh cluster**
+- New ESP-Now message type 6 (`JCMK_MSG_BLE_OBS`, 212-byte frame): Nodes scan
+  BLE, dedupe, and forward to the single Core, which logs them with its own GPS —
+  mirroring the Wi-Fi mesh flow. Legacy/third-party Cores (Biscuit Pro, JCMK C5)
+  drop type-6 cleanly; types 1–5 and the Wi-Fi `TEXT` format are unchanged.
+- OLED shows BLE tallies on the mesh page (Core `BLE:`, Node `B:`).
+
+**Tests / docs**
+- Host suite: `test_ble_csv`, `test_ble_dedupe`, `test_jcmk_ble` (row layout,
+  dedupe semantics, 212-byte mesh round-trip).
+- `LIBRARIES.md` (NimBLE install), `docs/PROTOCOL.md` (frozen type-6 layout).
+
+On-hardware validation still pending, especially node-mode BLE/ESP-Now
+coexistence (the tightest radio scenario).
+
 ## v2.52 (2026-05-28)
 
 Summary entry — the per-release changelog between v1.3-beta and v2.52

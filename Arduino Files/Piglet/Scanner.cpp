@@ -24,13 +24,7 @@ static void processScanResults(int n) {
   if (n <= 0) { WiFi.scanDelete(); return; }
 
   String firstSeen = iso8601NowUTC();
-  double lat = 0, lon = 0, altM = 0, accM = 0;
-  if (gpsHasFix) {
-    lat  = gps.location.lat();
-    lon  = gps.location.lng();
-    altM = gps.altitude.meters();
-    accM = gps.hdop.hdop();
-  }
+  GpsFix g = captureGpsFix();
 
   uint32_t wrote = 0;
   for (int i = 0; i < n; i++) {
@@ -51,7 +45,7 @@ static void processScanResults(int n) {
     if (is2g) networksFound2G++;
     else      networksFound5G++;
 
-    appendWigleRow(mac, ssid, authStr, firstSeen, ch, rssi, lat, lon, altM, accM);
+    appendWigleRow(mac, ssid, authStr, firstSeen, ch, rssi, g.lat, g.lon, g.altM, g.accM);
     wrote++;
   }
 

@@ -20,6 +20,7 @@ extern uint8_t  jcmkStartIdx;
 extern uint8_t  jcmkEndIdx;
 extern uint32_t jcmkNetworksFound;
 extern uint32_t jcmkSentCount;
+extern uint32_t jcmkBleSentCount;
 
 // Lifecycle — called from Piglet.ino on page enter/exit
 void enterNodeMode();
@@ -52,6 +53,7 @@ struct CoreNodeInfo {
 // Core state (read from Display.cpp for page 5 rendering)
 extern bool          meshCoreActive;
 extern uint32_t      coreRecordsRx;
+extern uint32_t      coreBleRecordsRx;
 extern uint8_t       coreNodeCount;
 extern CoreNodeInfo  coreNodes[CORE_MAX_NODES];
 

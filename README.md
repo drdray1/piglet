@@ -15,6 +15,7 @@ Designed for **[Seeed XIAO ESP32-S3](https://wiki.seeedstudio.com/xiao_esp32s3_g
 
 - 2.4 GHz Wi-Fi scanning  
 - 5 GHz scanning on ESP32-C5 hardware  
+- **Bluetooth LE wardriving** — passive BLE scan logged to the same WiGLE CSV (`Type=BLE`); opt-in via `bleEnabled=true`. In mesh mode, Nodes forward BLE observations to the Core. Requires the NimBLE-Arduino library.
 - GPS position, heading, and speed logging  
 - SD card logging in WiGLE CSV format  
 - Web UI for:
@@ -30,7 +31,7 @@ Designed for **[Seeed XIAO ESP32-S3](https://wiki.seeedstudio.com/xiao_esp32s3_g
 - **ESP-Now Mesh Node mode** — pair with a coordinator device for multi-node wardriving
 - **Mesh auto-start on boot** — configure `meshModeOnBoot` to automatically enter Core or Node mode after uploads complete, bypassing the AP window
 - **Screen rotation** — mount the display upside-down and set `rotateScreen180=true` to flip 180°
-- **PigletNode** — standalone minimal firmware for XIAO ESP32-C5 that boots directly as a mesh node (no display, GPS, or SD required)
+- **PigletNode** — standalone minimal firmware for XIAO ESP32-C5 that boots directly as a mesh node (no display, GPS, or SD required), scanning Wi-Fi **and** BLE
 
 
 ## ESP-Now Mesh Network Node Mode
@@ -74,19 +75,35 @@ Set `meshModeOnBoot` in `/wardriver.cfg` to automatically enter mesh mode after 
 When `core` or `node` is set the SoftAP window is **skipped entirely** (ESP-Now owns the WiFi stack and the AP would be non-functional). The device goes straight from boot uploads to the mesh page. Set via the web UI **Mesh Mode On Boot** dropdown or directly in `/wardriver.cfg`.
 
 
+## Bluetooth LE Wardriving
+
+Piglet can passively scan for Bluetooth LE devices alongside Wi-Fi and log them to the **same WiGLE-1.6 CSV** with `Type=BLE` — so a single upload to WiGLE or WDGoWars carries both Wi-Fi and BLE observations.
+
+- **Opt-in** on the main firmware: set `bleEnabled=true` in `wardriver.cfg` (config block below). Off by default — no flash/RAM cost when disabled.
+- **Always on** in the dedicated PigletNode firmware (see below).
+- **What's logged per device:** address + type (`[LE Public]` / `[LE Random]` / `[LE Resolvable]` / `[LE NonResolvable]`), advertised name, RSSI, 16-bit service UUIDs (in the RCOIs column, e.g. `FE9F;180F`), and the manufacturer company ID (MfgrId) — all GPS-stamped like Wi-Fi rows.
+- **In a mesh cluster:** every Node scans **both Wi-Fi and BLE** and forwards observations to the Core, which stamps them with its own GPS and logs them. Nodes need no GPS or SD. A per-device dedupe window keeps a device from flooding the log and the mesh.
+- **On the OLED:** the Status and Networks pages show a live BLE count; the mesh page shows BLE received (Core) and forwarded (Node).
+- **Library:** requires **NimBLE-Arduino 2.1.x** for any BLE build. See [`LIBRARIES.md`](LIBRARIES.md).
+
+Tuning knobs in `wardriver.cfg`: `bleScanDuration` (window length), `bleScanInterval` (time between windows), `bleDedupeWindow` (per-device suppress), `bleMaxResults` (memory cap). The mesh wire format is documented in [`docs/PROTOCOL.md`](docs/PROTOCOL.md).
+
+
 ## PigletNode — Standalone Mesh Node
 
 A minimal, standalone firmware for the **Seeed XIAO ESP32-C5** in the `PigletNode/` folder. No display, GPS, or SD card required — flash it and it automatically pairs with any Piglet running in Core mode and begins scanning.
 
-- Single-file Arduino sketch, zero external library dependencies
+- Single-file Arduino sketch (plus the bundled `Ble*.h` headers for BLE)
 - Boots directly into JCMK-compatible ESP-Now node mode
-- Dual-band scanning: 40 channels (2.4 GHz ch 1–14 + 5 GHz UNII-1/2/2e/3)
+- Dual-band Wi-Fi scanning: 40 channels (2.4 GHz ch 1–14 + 5 GHz UNII-1/2/2e/3)
+- **Always-on BLE scanning** — forwards Bluetooth LE observations to the Core
+  over ESP-Now alongside Wi-Fi (the Core geotags and logs them)
 - Auto-pairs with Piglet Core mode (XIAO or T-Dongle)
 - 30-second Core timeout with automatic re-search
 - LED: fast blink = searching, slow blink = paired and scanning
 - Hold BOOT button > 2 s to force a re-search
 
-**Flash:** Open `PigletNode/PigletNode.ino` in Arduino IDE, select **XIAO_ESP32C5**, upload. No libraries to install.
+**Flash:** Open `PigletNode/PigletNode.ino` in Arduino IDE, select **XIAO_ESP32C5**, upload. Requires the **NimBLE-Arduino 2.1.x** library (for BLE).
 
 
 ## T-Dongle C5 Variant
@@ -369,6 +386,20 @@ meshModeOnBoot=none
 # Reboot required after changing.
 
 rotateScreen180=false
+
+# ------------------------------------------------------------
+# BLE Wardriving (optional)
+# ------------------------------------------------------------
+# Passively scan for Bluetooth LE devices alongside Wi-Fi and log them to the
+# same CSV with Type=BLE (WiGLE-1.6). Requires the NimBLE-Arduino library (see
+# Libraries below) and a reboot when changing bleEnabled. In mesh mode, Nodes
+# forward BLE observations to the Core, which logs them with its own GPS.
+
+bleEnabled=false
+bleScanDuration=5      # BLE scan-window length, seconds (1-10)
+bleScanInterval=30     # seconds between windows (forced >= duration + 5)
+bleDedupeWindow=300    # per-device dedupe, seconds (0 = log every advert)
+bleMaxResults=500      # dedupe/queue cap (100-2000)
 ```
 
 
@@ -431,6 +462,7 @@ Install via Arduino Library Manager (`Sketch → Include Library → Manage Libr
 | Adafruit SSD1306 | Adafruit | OLED display driver |
 | Adafruit BusIO | Adafruit | Required by SSD1306 |
 | ArduinoJson | Benoit Blanchon | v6.x or v7.x |
+| NimBLE-Arduino | h2zero | **v2.1.x** — only for BLE builds (`bleEnabled=true` or PigletNode) |
 
 All other headers (`WiFi`, `WebServer`, `WiFiClientSecure`, `HTTPClient`, `SD`, `SPI`, `Wire`, `esp_now.h`, `esp_wifi.h`) are included in the ESP32 Arduino core — no separate install needed.
 

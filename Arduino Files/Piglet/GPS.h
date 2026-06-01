@@ -16,3 +16,7 @@ double headingSmoothedDeg();
 // Time helpers
 String iso8601NowUTC();
 time_t makeUtcEpochFromTm(struct tm* t);
+
+// One-shot GPS fix snapshot for CSV row stamping (zeros when no fix).
+struct GpsFix { double lat, lon, altM, accM; };
+GpsFix captureGpsFix();
