@@ -351,7 +351,11 @@ static void jcmkOnRecv(const esp_now_recv_info_t* info,
         uint8_t nxt = (coreReqTail + 1) % CORE_REQ_QUEUE;
         if (nxt != coreReqHead) {
           memcpy(coreReqBuf[coreReqTail].mac, info->src_addr, 6);
-          coreReqBuf[coreReqTail].isBiscuit = (len >= (int)sizeof(jcmk_text_msg_t));
+          // A type-6 BLE frame is only ever sent by a Piglet/PigletNode node
+          // (Biscuit/JCMK peers don't speak type 6). It's 212 bytes, same as
+          // jcmk_text_msg_t, so the size-based Biscuit heuristic used elsewhere
+          // would wrongly flag it — register it as a non-Biscuit JCMK node.
+          coreReqBuf[coreReqTail].isBiscuit = false;
           coreReqTail = nxt;
         }
       }
