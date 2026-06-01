@@ -507,29 +507,18 @@ static void coreParseAndLogText(const char* line) {
   int    ch    = s.substring(p2 + 1, p3).toInt();
   int    rssi  = s.substring(p3 + 1).toInt();  // toInt() stops at next comma
 
-  double lat = 0, lon = 0, altM = 0, accM = 0;
-  if (gpsHasFix) {
-    lat  = gps.location.lat();
-    lon  = gps.location.lng();
-    altM = gps.altitude.meters();
-    accM = gps.hdop.hdop();
-  }
-  appendWigleRow(bssid, ssid, auth, iso8601NowUTC(), ch, rssi, lat, lon, altM, accM);
+  GpsFix g = captureGpsFix();
+  appendWigleRow(bssid, ssid, auth, iso8601NowUTC(), ch, rssi,
+                 g.lat, g.lon, g.altM, g.accM);
   coreRecordsRx++;
 }
 
 // Log a node-forwarded BLE observation to the Core's CSV. The Core stamps it
 // with its OWN GPS + time (the node has neither) — identical to the Wi-Fi path.
 static void coreLogBleObs(const BleObservation& o) {
-  double lat = 0, lon = 0, altM = 0, accM = 0;
-  if (gpsHasFix) {
-    lat  = gps.location.lat();
-    lon  = gps.location.lng();
-    altM = gps.altitude.meters();
-    accM = gps.hdop.hdop();
-  }
+  GpsFix g = captureGpsFix();
   appendBleRow(o.addr, o.name, o.addrType, iso8601NowUTC(), o.channel, o.rssi,
-               lat, lon, altM, accM, o.serviceUuids, o.mfgrId);
+               g.lat, g.lon, g.altM, g.accM, o.serviceUuids, o.mfgrId);
   coreBleRecordsRx++;
 }
 

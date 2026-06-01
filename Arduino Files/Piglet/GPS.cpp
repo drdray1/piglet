@@ -4,6 +4,17 @@
 #include <time.h>
 #include <sys/time.h>
 
+GpsFix captureGpsFix() {
+  GpsFix g{0, 0, 0, 0};
+  if (gpsHasFix) {
+    g.lat  = gps.location.lat();
+    g.lon  = gps.location.lng();
+    g.altM = gps.altitude.meters();
+    g.accM = gps.hdop.hdop();
+  }
+  return g;
+}
+
 // ---- Heading smoothing ----
 
 static const uint8_t HEADING_AVG_N = 8; // samples in moving window (tune 5-12)

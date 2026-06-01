@@ -321,17 +321,11 @@ void writeBleRowsFromObs(const std::vector<BleObservation>& obs) {
   // One GPS snapshot for the whole batch (doc §9 Option A). A BLE window is a
   // few seconds; at wardriving speeds the position drift is below GPS accuracy.
   String firstSeen = iso8601NowUTC();
-  double lat = 0, lon = 0, altM = 0, accM = 0;
-  if (gpsHasFix) {
-    lat  = gps.location.lat();
-    lon  = gps.location.lng();
-    altM = gps.altitude.meters();
-    accM = gps.hdop.hdop();
-  }
+  GpsFix g = captureGpsFix();
 
   for (const BleObservation& o : obs) {
     appendBleRow(o.addr, o.name, o.addrType, firstSeen, o.channel, o.rssi,
-                 lat, lon, altM, accM, o.serviceUuids, o.mfgrId);
+                 g.lat, g.lon, g.altM, g.accM, o.serviceUuids, o.mfgrId);
   }
   if (logFile) logFile.flush();
   Serial.printf("[BLE] logged %u observation(s)%s\n", (unsigned)obs.size(),
