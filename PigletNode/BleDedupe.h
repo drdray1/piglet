@@ -1,66 +1,54 @@
-// Per-device dedupe for BLE observations, shared by solo and mesh-node scanning.
+// Per-device "log once" dedupe ring, shared by Wi-Fi and BLE scanning.
 //
-// A device (keyed on its BDA + address type) is emitted at most once per
-// `windowSec`; repeat sightings inside that window are suppressed. Memory is
-// bounded to `maxSize` entries, oldest-inserted evicted first. This throttles
-// both SD writes (solo) and ESP-Now traffic (node mode).
+// A device (keyed on its 6-byte MAC/BDA + address type) is emitted the FIRST
+// time it is seen and suppressed on every later sighting — no time window, no
+// GPS distance. Memory is bounded to `maxSize` entries, oldest-inserted evicted
+// first (FIFO ring); once a device is evicted it can emit again. This matches
+// the upstream JCMK / Biscuit `seen_mac()` + `mac_history[200]` scheme and
+// throttles both SD writes (solo) and ESP-Now traffic (node mode).
 //
-// Pure / host-testable: the caller injects `nowMs` (millis()) so tests can drive
-// a virtual clock. No Arduino, NimBLE, or STL-beyond-container dependency.
+// Wi-Fi callers pass addrType = 0 (BSSIDs have no address type); BLE callers
+// pass the NimBLE address type so public/random/RPA/NRPA variants of the same
+// MAC stay distinct.
+//
+// Pure / host-testable: no Arduino, NimBLE, clock, or STL-beyond-container
+// dependency.
+//
+// NOTE: an identical copy lives at Arduino Files/Piglet/BleDedupe.h — keep the
+// two in sync.
 #pragma once
 
 #include <cstddef>
 #include <cstdint>
 #include <deque>
-#include <unordered_map>
+#include <unordered_set>
 
 class BleDedupe {
 public:
-  // windowSec: dedupe window. maxSize: hard cap on tracked devices (>=1).
-  BleDedupe(uint32_t windowSec, size_t maxSize)
-      : windowMs_(windowSec * 1000UL), maxSize_(maxSize ? maxSize : 1) {}
+  // maxSize: hard cap on tracked devices (>=1). Default 200 matches upstream.
+  explicit BleDedupe(size_t maxSize = 200)
+      : maxSize_(maxSize ? maxSize : 1) {}
 
-  // True if this device should be logged now — first sighting, or the dedupe
-  // window has elapsed since it was last logged. Records the emit time.
-  // A window of 0 means "never suppress" (every advert emits).
-  bool shouldEmit(const uint8_t bda[6], uint8_t addrType, uint32_t nowMs) {
-    const uint64_t key = makeKey(bda, addrType);
-    auto it = ring_.find(key);
-    if (it != ring_.end()) {
-      if (windowMs_ != 0 && (uint32_t)(nowMs - it->second) < windowMs_)
-        return false;        // within window -> suppress
-      it->second = nowMs;    // first time, or window elapsed -> re-emit
-      return true;
-    }
-    ring_.emplace(key, nowMs);
+  // True the first time this device is seen (caller should log/forward it),
+  // false on every later sighting — until it is evicted past the cap, after
+  // which it is treated as new again. Records first-seen devices.
+  bool shouldEmit(const uint8_t mac[6], uint8_t addrType) {
+    const uint64_t key = makeKey(mac, addrType);
+    if (ring_.find(key) != ring_.end())
+      return false;            // already seen -> suppress
+    ring_.insert(key);
     order_.push_back(key);
     evictIfNeeded();
     return true;
-  }
-
-  // Drop entries not seen for at least one window (memory pruning). Optional —
-  // shouldEmit() already handles re-emit timing; this just frees slots for
-  // devices that have gone away. Cheap: order_ is roughly insertion-ordered and
-  // millis() is monotonic, so the oldest live at the front.
-  void expire(uint32_t nowMs) {
-    if (windowMs_ == 0) return;
-    while (!order_.empty()) {
-      const uint64_t key = order_.front();
-      auto it = ring_.find(key);
-      if (it == ring_.end()) { order_.pop_front(); continue; }  // stale slot
-      if ((uint32_t)(nowMs - it->second) < windowMs_) break;    // newer behind it
-      ring_.erase(it);
-      order_.pop_front();
-    }
   }
 
   size_t size() const { return ring_.size(); }
   void clear() { ring_.clear(); order_.clear(); }
 
 private:
-  static uint64_t makeKey(const uint8_t bda[6], uint8_t addrType) {
+  static uint64_t makeKey(const uint8_t mac[6], uint8_t addrType) {
     uint64_t k = 0;
-    for (int i = 0; i < 6; i++) k |= (uint64_t)bda[i] << (i * 8);
+    for (int i = 0; i < 6; i++) k |= (uint64_t)mac[i] << (i * 8);
     k |= (uint64_t)addrType << 48;   // different addr type => different device
     return k;
   }
@@ -73,8 +61,7 @@ private:
     }
   }
 
-  std::unordered_map<uint64_t, uint32_t> ring_;  // key -> last-emit millis
-  std::deque<uint64_t> order_;                   // insertion order for eviction
-  uint32_t windowMs_;
-  size_t   maxSize_;
+  std::unordered_set<uint64_t> ring_;  // seen keys
+  std::deque<uint64_t> order_;         // insertion order for FIFO eviction
+  size_t maxSize_;
 };

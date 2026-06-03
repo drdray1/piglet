@@ -74,6 +74,20 @@ Set `meshModeOnBoot` in `/wardriver.cfg` to automatically enter mesh mode after 
 
 When `core` or `node` is set the SoftAP window is **skipped entirely** (ESP-Now owns the WiFi stack and the AP would be non-functional). The device goes straight from boot uploads to the mesh page. Set via the web UI **Mesh Mode On Boot** dropdown or directly in `/wardriver.cfg`.
 
+### Assigning Node Scan Roles (Core SD config)
+
+By default every node scans **both** Wi-Fi and BLE. From the **Core's** `/wardriver.cfg` you can dedicate each node to a single radio — e.g. some nodes Wi-Fi-only and others BLE-only — addressed by the node's full MAC:
+
+```
+nodeDefaultRole=both              # role for any node not listed (wifi | ble | both)
+node.A1B2C3D4E5F6=wifi            # this node: Wi-Fi only
+node.A1B2C3D4E5F7=ble             # this node: BLE only
+```
+
+The role is delivered to each node over the existing mesh link (it rides the channel-assignment frame), so **no node-side config is needed** — a PigletNode honors any role directly. To discover a node's MAC, watch the Core's **Serial** output: when a node joins, the Core prints its full MAC and a ready-to-paste `node.<mac>=...` line. The Core's OLED mesh page also shows a per-node role glyph (`W` / `B` / `2`).
+
+Notes: a main-sketch node must also keep its own `bleEnabled=true` to honor a `ble`/`both` role (a `bleEnabled=false` node can only do Wi-Fi). Role edits are read once at boot — **reboot the Core** to apply. Old/3rd-party JCMK cores that don't send roles leave every node at `both`.
+
 
 ## Bluetooth LE Wardriving
 
@@ -82,7 +96,7 @@ Piglet can passively scan for Bluetooth LE devices alongside Wi-Fi and log them 
 - **Opt-in** on the main firmware: set `bleEnabled=true` in `wardriver.cfg` (config block below). Off by default — no flash/RAM cost when disabled.
 - **Always on** in the dedicated PigletNode firmware (see below).
 - **What's logged per device:** address + type (`[LE Public]` / `[LE Random]` / `[LE Resolvable]` / `[LE NonResolvable]`), advertised name, RSSI, 16-bit service UUIDs (in the RCOIs column, e.g. `FE9F;180F`), and the manufacturer company ID (MfgrId) — all GPS-stamped like Wi-Fi rows.
-- **In a mesh cluster:** every Node scans **both Wi-Fi and BLE** and forwards observations to the Core, which stamps them with its own GPS and logs them. Nodes need no GPS or SD. A per-device dedupe window keeps a device from flooding the log and the mesh.
+- **In a mesh cluster:** each Node scans Wi-Fi and/or BLE (per its [assigned role](#assigning-node-scan-roles-core-sd-config), default both) and forwards observations to the Core, which stamps them with its own GPS and logs them. Nodes need no GPS or SD. Log-once dedupe keeps a device from flooding the log and the mesh.
 - **On the OLED:** the Status and Networks pages show a live BLE count; the mesh page shows BLE received (Core) and forwarded (Node).
 - **Library:** requires **NimBLE-Arduino 2.1.x** for any BLE build. See [`LIBRARIES.md`](LIBRARIES.md).
 

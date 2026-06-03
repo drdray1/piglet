@@ -3,8 +3,19 @@
 #include "GPS.h"
 #include "BleCsv.h"
 #include "BleScanner.h"
+#include "BleDedupe.h"
+#include "Config.h"
 
 static void writeCsvLine(const String& line);
+
+// Wi-Fi "log once" dedupe ring. A given BSSID is written to the CSV only once
+// per session (until evicted past the cap), matching the upstream JCMK/Biscuit
+// behaviour and keeping file sizes sane. Because every Wi-Fi write — solo scans
+// (Scanner.cpp) and Core node-forwarded records (MeshNode.cpp) — funnels through
+// appendWigleRow(), this single shared ring dedupes across both, mirroring
+// upstream's shared mac_history buffer. Lazily constructed on first use so
+// cfg.bleMaxResults is loaded by then. (BLE has its own ring in BleScanner.)
+static BleDedupe* gWifiSeen = nullptr;
 
 // ---- Path helpers ----
 
@@ -229,6 +240,14 @@ void appendWigleRow(const String& mac, const String& ssid, const String& auth,
                     const String& firstSeen, int channel, int rssi,
                     double lat, double lon, double altM, double accM) {
   if (!sdOk || !logFile) return;
+
+  // Suppress repeat sightings of the same BSSID (log-once, see gWifiSeen).
+  if (mac.length() >= 17) {
+    if (!gWifiSeen) gWifiSeen = new BleDedupe(cfg.bleMaxResults);
+    uint8_t bssid[6];
+    parseBda(mac.c_str(), bssid);
+    if (!gWifiSeen->shouldEmit(bssid, 0)) return;
+  }
 
   String safeSsid = ssid;
   safeSsid.replace("\"", "\"\"");

@@ -84,6 +84,22 @@ bool parseKeyValueLine(const String& lineIn, String& keyOut, String& valOut) {
 }
 
 void cfgAssignKV(const String& k, const String& v) {
+  // Per-node scan roles: node.<12hex>=wifi|ble|both. Handled first (prefix match).
+  // Malformed entries are silently dropped — consistent with the ignore-unknown
+  // behavior of the rest of the parser.
+  if (k.startsWith("node.")) {
+    uint8_t mac[6], role;
+    String hex = k.substring(5);
+    if (parseMac12(hex.c_str(), mac) && roleFromStr(v.c_str(), role))
+      nodeRoleUpsert(cfg.nodeRoles, &cfg.nodeRoleCount, CFG_MAX_NODE_ROLES, mac, role);
+    return;
+  }
+  if (k == "nodeDefaultRole") {
+    uint8_t r;
+    if (roleFromStr(v.c_str(), r)) cfg.nodeDefaultRole = r;
+    return;
+  }
+
   if (k == "wigleBasicToken") cfg.wigleBasicToken = v;
   else if (k == "homeSsid")   cfg.homeSsid = v;
   else if (k == "homePsk")    cfg.homePsk = v;
@@ -140,13 +156,17 @@ void cfgAssignKV(const String& k, const String& v) {
     if (n >= 5 && n <= 300) cfg.bleScanInterval = (uint16_t)n;
   }
   else if (k == "bleDedupeWindow") {
-    long n = v.toInt();
-    if (n >= 0 && n <= 86400) cfg.bleDedupeWindow = (uint32_t)n;
+    // Deprecated: dedupe is now log-once (no time window). Parsed and ignored
+    // so old saved configs still load without error.
   }
   else if (k == "bleMaxResults") {
     int n = v.toInt();
     if (n >= 100 && n <= 2000) cfg.bleMaxResults = (uint16_t)n;
   }
+}
+
+uint8_t cfgRoleForMac(const uint8_t mac[6]) {
+  return roleForMacIn(cfg.nodeRoles, cfg.nodeRoleCount, mac, cfg.nodeDefaultRole);
 }
 
 // Clamp cross-field / out-of-range constraints that single-key parsing in
@@ -156,7 +176,6 @@ void validateConfig() {
   if (cfg.bleScanDuration > 10) cfg.bleScanDuration = 10;
   if (cfg.bleScanInterval < (uint16_t)(cfg.bleScanDuration + 5))
     cfg.bleScanInterval = (uint16_t)(cfg.bleScanDuration + 5);
-  if (cfg.bleDedupeWindow > 86400) cfg.bleDedupeWindow = 86400;
   if (cfg.bleMaxResults < 100)  cfg.bleMaxResults = 100;
   if (cfg.bleMaxResults > 2000) cfg.bleMaxResults = 2000;
 }
@@ -298,10 +317,25 @@ bool saveConfigToSD() {
   f.print("bleScanDuration="); f.println(cfg.bleScanDuration);
   f.println("# Time between BLE scan windows (s). Forced to >= bleScanDuration + 5.");
   f.print("bleScanInterval="); f.println(cfg.bleScanInterval);
-  f.println("# Per-device dedupe window (s). 0 = log every advert. Max 86400.");
-  f.print("bleDedupeWindow="); f.println(cfg.bleDedupeWindow);
-  f.println("# Dedupe ring + pending FIFO cap (memory knob). 100-2000.");
+  f.println("# Log-once dedupe ring + pending FIFO cap (memory knob). 100-2000.");
   f.print("bleMaxResults=");   f.println(cfg.bleMaxResults);
+
+  f.println("");
+  f.println("# ---- Mesh per-node scan roles (Core only) ----");
+  f.println("# Assign each cluster node a task by its FULL 12-hex MAC (no colons):");
+  f.println("#   node.AABBCCDDEE01=wifi   (Wi-Fi only)");
+  f.println("#   node.AABBCCDDEE02=ble    (BLE only)");
+  f.println("#   node.AABBCCDDEE03=both   (Wi-Fi + BLE)");
+  f.println("# A node's full MAC is printed to Serial on join and shown on the OLED.");
+  f.println("# nodeDefaultRole applies to any node not listed. Reboot Core to apply edits.");
+  f.print("nodeDefaultRole="); f.println(roleToStr(cfg.nodeDefaultRole));
+  for (uint8_t i = 0; i < cfg.nodeRoleCount; i++) {
+    const uint8_t* m = cfg.nodeRoles[i].mac;
+    char line[48];
+    snprintf(line, sizeof(line), "node.%02X%02X%02X%02X%02X%02X=%s",
+             m[0], m[1], m[2], m[3], m[4], m[5], roleToStr(cfg.nodeRoles[i].role));
+    f.println(line);
+  }
 
   f.flush();
   f.close();

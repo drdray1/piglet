@@ -48,6 +48,7 @@ struct CoreNodeInfo {
   uint32_t lastHbMs;
   uint32_t recordsRx;
   bool     isBiscuit;  // true = Biscuit Node protocol (requires full-size 212-byte packets)
+  uint8_t  role;       // NodeRole — cfgRoleForMac(mac), looked up at join
 };
 
 // Core state (read from Display.cpp for page 5 rendering)

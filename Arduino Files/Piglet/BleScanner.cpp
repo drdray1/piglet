@@ -54,7 +54,7 @@ public:
     uint32_t now = millis();
 
     Lock lk;
-    if (!gDedupe->shouldEmit(bda, addrType, now)) return;  // duplicate
+    if (!gDedupe->shouldEmit(bda, addrType)) return;  // already seen
     gLifetimeUnique++;
 
     if (gPending.size() >= gMaxResults) gPending.pop_front();  // bound memory
@@ -103,9 +103,9 @@ void BleScanner::begin() {
   if (initialised_) return;
 
   if (!gMutex) gMutex = xSemaphoreCreateMutex();
-  gMaxResults = cfg.bleMaxResults ? cfg.bleMaxResults : 500;
+  gMaxResults = cfg.bleMaxResults ? cfg.bleMaxResults : 200;
   if (!gDedupe)
-    gDedupe = new BleDedupe(cfg.bleDedupeWindow, gMaxResults);
+    gDedupe = new BleDedupe(gMaxResults);
 
   NimBLEDevice::init("piglet");
   NimBLEDevice::setPower(ESP_PWR_LVL_P9);
@@ -163,11 +163,11 @@ void BleScanner::tick() {
     windowEnded = true;
   }
 
-  // Prune stale dedupe entries to bound memory; snapshot counts under the lock.
+  // Snapshot counts under the lock. The log-once ring self-bounds via FIFO
+  // eviction at its cap, so there is nothing to prune here.
   uint32_t life = 0; size_t tracked = 0;
   if (gDedupe) {
     Lock lk;
-    gDedupe->expire(millis());
     life = gLifetimeUnique;
     tracked = gDedupe->size();
   }

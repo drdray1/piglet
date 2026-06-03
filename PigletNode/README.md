@@ -8,8 +8,16 @@ No display. No GPS. No SD card. Just plug it in, and it automatically pairs with
 > Wi-Fi sweep and forwards observations to the Core as ESP-Now type-6 frames.
 > Requires the **NimBLE-Arduino 2.1.x** library (Library Manager). The Core must
 > run a BLE-capable Piglet build to log them; older Cores ignore the frames.
-> The `Ble*.h` / `JcmkBle.h` headers here are copies of the main sketch's —
-> keep them in sync (the type-6 wire format must match the Core).
+> The `Ble*.h` / `JcmkBle.h` / `NodeRole.h` headers here are copies of the main
+> sketch's — keep them in sync (the wire formats must match the Core).
+
+> **Per-node scan role.** The Core can dedicate this node to **wifi**, **ble**,
+> or **both** (default) by MAC, set in the Core's `/wardriver.cfg`
+> (`node.<12hex>=wifi|ble|both`). PigletNode always compiles BLE in, so it
+> honors any role at runtime — a `wifi` role simply leaves the BLE stack idle.
+> The role rides the existing channel-assignment frame; edit the Core config and
+> reboot the Core to change it. The Core prints each node's MAC and a
+> ready-to-paste config line to Serial when the node joins.
 
 ---
 

@@ -8,6 +8,7 @@
 #include <esp_now.h>
 #include "esp_wifi.h"
 #include <vector>
+#include <stddef.h>   // offsetof
 
 // ================================================================
 //  Protocol constants
@@ -47,7 +48,12 @@ typedef struct __attribute__((packed)) {
   uint8_t node_count;
   uint8_t start_channel_idx;
   uint8_t end_channel_idx;
+  uint8_t role;               // NodeRole (Piglet extension; trailing → len-guarded)
 } jcmk_admin_msg_t;
+// Keep this layout byte-identical with the copy in PigletNode.ino. The legacy
+// JCMK admin frame is 6 bytes (no role); 3rd-party nodes read their own sizeof
+// and ignore the trailing role byte, and our node handler accepts len >= 6.
+static_assert(sizeof(jcmk_admin_msg_t) == 11, "jcmk_admin_msg_t must be 11 bytes");
 
 typedef struct __attribute__((packed)) {
   char     magic[4];
@@ -78,6 +84,7 @@ uint8_t  jcmkCoreMac[6]  = {0};
 uint8_t  jcmkStartIdx    = 0;
 uint8_t  jcmkEndIdx      = 0;
 uint8_t  jcmkAssignVer   = 0;
+static uint8_t jcmkRole   = NODE_ROLE_BOTH;  // task assigned by Core (wifi/ble/both)
 uint32_t jcmkNetworksFound = 0;
 uint32_t jcmkSentCount   = 0;
 uint32_t jcmkBleSentCount = 0;   // BLE observations forwarded to the Core
@@ -216,7 +223,8 @@ static void coreSendReply(const uint8_t* mac) {
 // Send Biscuit Node a role assignment (MSG_ROLE_ASSIGN, type=5) then a channel
 // config (MSG_CONFIG_UPDATE, type=10). Both packets must be full size (212 bytes).
 // Called from coreReassignChannels / coreResendAdminToAll for isBiscuit nodes.
-static void coreSendBiscuitRoleAndConfig(const uint8_t* mac, uint8_t startIdx, uint8_t endIdx) {
+static void coreSendBiscuitRoleAndConfig(const uint8_t* mac, uint8_t startIdx, uint8_t endIdx,
+                                         uint8_t role) {
   // Step 1: role assignment — text[0] = 1 (ROLE_WIFI)
   // Biscuit MSG_ROLE_ASSIGN = type 5, same numeric value as JCMK_MSG_ADMIN.
   // After receiving this, Biscuit transitions from STATE_WAITING_ROLE to STATE_SCANNING.
@@ -245,6 +253,12 @@ static void coreSendBiscuitRoleAndConfig(const uint8_t* mac, uint8_t startIdx, u
   }
   chList += ";dwell=";
   chList += String((uint32_t)NODE_SCAN_DWELL_MS);
+  // Piglet extension: carry the scan role so PigletNodes (which the Core flags
+  // as Biscuit because they send full-size frames) get their wifi/ble/both
+  // assignment over the path they actually parse. Real Biscuit nodes ignore the
+  // extra key. Kept last so the value is cleanly terminated.
+  chList += ";role=";
+  chList += roleToStr(role);
 
   uint16_t slen = (chList.length() < JCMK_TEXT_MAX)
                 ? (uint16_t)chList.length() : (uint16_t)JCMK_TEXT_MAX;
@@ -253,10 +267,11 @@ static void coreSendBiscuitRoleAndConfig(const uint8_t* mac, uint8_t startIdx, u
   cfgMsg.text[slen] = '\0';
   esp_now_send(mac, (uint8_t*)&cfgMsg, sizeof(cfgMsg));
 
-  Serial.printf("[CORE] Biscuit role+config sent (ch %d-%d, dwell %dms)\n",
+  Serial.printf("[CORE] Biscuit role+config sent (ch %d-%d, dwell %dms, role=%s)\n",
     JCMK_CHANNELS[startIdx],
     JCMK_CHANNELS[end],
-    (int)NODE_SCAN_DWELL_MS);
+    (int)NODE_SCAN_DWELL_MS,
+    roleToStr(role));
 }
 
 // ESP-Now receive callback — handles both Node and Core roles
@@ -365,13 +380,17 @@ static void jcmkOnRecv(const esp_now_recv_info_t* info,
     if (type == JCMK_MSG_CORE_REPLY && !jcmkHaveCore && !jcmkCoreFoundPending) {
       memcpy(jcmkCoreMacPending, info->src_addr, 6);
       jcmkCoreFoundPending = true;
-    } else if (type == JCMK_MSG_ADMIN && len >= (int)sizeof(jcmk_admin_msg_t)) {
+    } else if (type == JCMK_MSG_ADMIN && len >= (int)offsetof(jcmk_admin_msg_t, role)) {
+      // Base guard is the legacy (pre-role) struct size so a 6-field admin from
+      // an old/3rd-party Core still assigns channels. Read role only if present.
       const jcmk_admin_msg_t* adm = (const jcmk_admin_msg_t*)data;
       if (adm->assignment_version != jcmkAssignVer) {
         jcmkAssignVer = adm->assignment_version;
         jcmkStartIdx  = adm->start_channel_idx;
         jcmkEndIdx    = adm->end_channel_idx;
       }
+      if (len >= (int)sizeof(jcmk_admin_msg_t))
+        jcmkRole = adm->role;   // applied unconditionally (idempotent)
     }
   }
 }
@@ -393,15 +412,21 @@ static void coreFindOrAddNode(const uint8_t* mac, bool isBiscuit) {
       coreNodes[i].recordsRx = 0;
       coreNodes[i].isBiscuit = isBiscuit;
       memcpy(coreNodes[i].mac, mac, 6);
+      coreNodes[i].role = cfgRoleForMac(mac);
       coreNodeCount++;
       jcmkAddPeer(mac);
       // Re-send CORE_REPLY now that the peer is registered.
       // The initial reply from jcmkOnRecv() may have failed because the node's
       // MAC wasn't yet in the peer list when esp_now_send() was called.
       coreSendReply(mac);
-      Serial.printf("[CORE] New %s node %d: %02X:%02X:%02X:%02X:%02X:%02X\n",
+      Serial.printf("[CORE] New %s node %d: %02X:%02X:%02X:%02X:%02X:%02X  role=%s\n",
         isBiscuit ? "Biscuit" : "JCMK",
-        i, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+        i, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
+        roleToStr(coreNodes[i].role));
+      // Ready-to-paste config line so the user can pin this node's role.
+      Serial.printf("[CORE]   add to /wardriver.cfg: node.%02X%02X%02X%02X%02X%02X=%s\n",
+        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
+        roleToStr(coreNodes[i].role));
       return;
     }
   }
@@ -436,7 +461,8 @@ static void coreReassignChannels() {
     if (coreNodes[slot].isBiscuit) {
       coreSendBiscuitRoleAndConfig(coreNodes[slot].mac,
                                    coreNodes[slot].startIdx,
-                                   coreNodes[slot].endIdx);
+                                   coreNodes[slot].endIdx,
+                                   coreNodes[slot].role);
     } else {
       jcmk_admin_msg_t msg;
       memcpy(msg.magic, JCMK_MAGIC, 4);
@@ -446,6 +472,7 @@ static void coreReassignChannels() {
       msg.node_index         = n;
       msg.start_channel_idx  = coreNodes[slot].startIdx;
       msg.end_channel_idx    = coreNodes[slot].endIdx;
+      msg.role               = coreNodes[slot].role;
       esp_now_send(coreNodes[slot].mac, (uint8_t*)&msg, sizeof(msg));
     }
     delay(10);
@@ -463,7 +490,8 @@ static void coreResendAdminToAll() {
     if (coreNodes[i].isBiscuit) {
       coreSendBiscuitRoleAndConfig(coreNodes[i].mac,
                                    coreNodes[i].startIdx,
-                                   coreNodes[i].endIdx);
+                                   coreNodes[i].endIdx,
+                                   coreNodes[i].role);
     } else {
       jcmk_admin_msg_t msg;
       memcpy(msg.magic, JCMK_MAGIC, 4);
@@ -473,6 +501,7 @@ static void coreResendAdminToAll() {
       msg.node_index         = n;
       msg.start_channel_idx  = coreNodes[i].startIdx;
       msg.end_channel_idx    = coreNodes[i].endIdx;
+      msg.role               = coreNodes[i].role;
       esp_now_send(coreNodes[i].mac, (uint8_t*)&msg, sizeof(msg));
     }
     n++;
@@ -529,6 +558,7 @@ static void coreLogBleObs(const BleObservation& o) {
 //  window (heartbeat + NODE_ADMIN_WIN_MS) before the next cycle.
 // ================================================================
 static void nodeDoScanTick() {
+  if (jcmkRole == NODE_ROLE_BLE) return;  // BLE-only node: no Wi-Fi scanning
   uint8_t numCh = (jcmkEndIdx >= jcmkStartIdx)
                 ? (jcmkEndIdx - jcmkStartIdx + 1) : 0;
   if (numCh == 0) return;
@@ -612,6 +642,7 @@ void enterNodeMode() {
   jcmkStartIdx          = 0;
   jcmkEndIdx            = JCMK_NUM_CHANNELS - 1;
   jcmkAssignVer         = 0;
+  jcmkRole              = NODE_ROLE_BOTH;  // until the Core assigns a task
   nodeScanActive        = false;
   nodeScanChOffset      = 0;
   nodeScanAdminWin      = false;
@@ -854,7 +885,9 @@ void nodeModeTick() {
   // is idle, and we hold off the Wi-Fi sweep while a window is active. After the
   // window we return the radio to ch 6 before forwarding to the Core.
   bool bleWindowActive = false;
-  if (jcmkHaveCore && cfg.bleEnabled && bleScanner.ready()) {
+  // role gate: a WiFi-only node never opens a BLE window. (BLE still requires
+  // local bleEnabled to have initialised the NimBLE stack — see cluster-node.cfg.)
+  if (jcmkHaveCore && cfg.bleEnabled && jcmkRole != NODE_ROLE_WIFI && bleScanner.ready()) {
     static uint32_t lastNodeBleMs = 0;
     if (!bleScanner.isScanning() && !nodeScanActive &&
         (now - lastNodeBleMs) >= (uint32_t)cfg.bleScanInterval * 1000UL) {
@@ -925,10 +958,11 @@ void drawPageMeshNode() {
         uint8_t* m = coreNodes[i].mac;
         uint8_t si = coreNodes[i].startIdx, ei = coreNodes[i].endIdx;
         char buf[22];
-        snprintf(buf, sizeof(buf), "%02X:%02X:%02X %d-%d",
+        snprintf(buf, sizeof(buf), "%02X:%02X:%02X %d-%d %c",
                  m[3], m[4], m[5],
                  (si < JCMK_NUM_CHANNELS) ? JCMK_CHANNELS[si] : 0,
-                 (ei < JCMK_NUM_CHANNELS) ? JCMK_CHANNELS[ei] : 0);
+                 (ei < JCMK_NUM_CHANNELS) ? JCMK_CHANNELS[ei] : 0,
+                 roleGlyph(coreNodes[i].role));
         display.print(buf);
         shown++;
       }

@@ -1,6 +1,7 @@
 #pragma once
 #include <Arduino.h>
 #include "PinMapDefs.h"
+#include "NodeRole.h"
 
 struct Config {
   String wigleBasicToken;
@@ -51,11 +52,19 @@ struct Config {
   uint16_t bleScanDuration = 5;
   // Time between BLE scan-window starts (s). Forced >= bleScanDuration + 5.
   uint16_t bleScanInterval = 30;
-  // Per-device dedupe window (s). A device seen within this window is not
-  // logged again. 0 = log every advert (debug); clamped to <= 86400.
-  uint32_t bleDedupeWindow = 300;
-  // Cap on the dedupe ring + pending-result FIFO size (memory knob). 100–2000.
-  uint16_t bleMaxResults   = 500;
+  // Cap on the log-once dedupe rings (Wi-Fi + BLE) and the BLE pending FIFO
+  // (memory knob). Each unique MAC/BSSID is logged once until evicted past this
+  // cap. 100–2000; default 200 matches the upstream JCMK/Biscuit mac_history.
+  uint16_t bleMaxResults   = 200;
+
+  // ---- Mesh per-node scan roles (Core only; SD-config-only management) ----
+  // The Core assigns each node a task by full MAC via `node.<12hex>=wifi|ble|both`
+  // lines in wardriver.cfg. Unlisted/new nodes use nodeDefaultRole. Roles are
+  // delivered to nodes over the existing mesh admin frame. Reboot the Core to
+  // apply edits (config is read once at boot).
+  uint8_t       nodeDefaultRole = NODE_ROLE_BOTH;
+  uint8_t       nodeRoleCount   = 0;
+  NodeRoleEntry nodeRoles[CFG_MAX_NODE_ROLES] = {};
 };
 
 const PinMap& detectPinsByChip();
@@ -65,6 +74,7 @@ bool wardriverIsC5();
 String trimCopy(String s);
 bool parseKeyValueLine(const String& lineIn, String& keyOut, String& valOut);
 void cfgAssignKV(const String& k, const String& v);
+uint8_t cfgRoleForMac(const uint8_t mac[6]);  // node role by MAC, or nodeDefaultRole
 void validateConfig();   // clamp cross-field constraints after a load
 bool loadConfigFromSD();
 bool saveConfigToSD();

@@ -32,10 +32,12 @@
 #include <deque>
 #include <vector>
 #include <cstring>
+#include <stddef.h>      // offsetof
 #include "BleCsv.h"       // formatBda / parseBda / normalizeBleUuid16
 #include "BleDedupe.h"    // per-device dedupe ring
 #include "BleScanner.h"   // BleObservation POD (the class itself is unused here)
 #include "JcmkBle.h"      // jcmk_ble_obs_msg_t (type 6) + jcmkBleBuild
+#include "NodeRole.h"     // NodeRole enum (scan task assigned by the Core)
 
 // ================================================================
 //  Board — XIAO ESP32-C5
@@ -90,7 +92,10 @@ typedef struct __attribute__((packed)) {
   uint8_t node_count;
   uint8_t start_channel_idx;
   uint8_t end_channel_idx;
+  uint8_t role;               // NodeRole (Piglet extension; trailing → len-guarded)
 } jcmk_admin_msg_t;
+// MUST stay byte-identical with the copy in Arduino Files/Piglet/MeshNode.cpp.
+static_assert(sizeof(jcmk_admin_msg_t) == 11, "jcmk_admin_msg_t must be 11 bytes");
 
 // JCMK dual-band channel table (2.4 GHz + 5 GHz)
 // Indices are shared with the Core — do NOT reorder.
@@ -113,6 +118,7 @@ static uint8_t  coreMac[6]   = {0};
 static uint8_t  startIdx      = 0;
 static uint8_t  endIdx        = NUM_CHANNELS - 1;  // default = all channels
 static uint8_t  assignVer     = 0;
+static uint8_t  nodeRole       = NODE_ROLE_BOTH;  // task assigned by Core (wifi/ble/both)
 static uint32_t netFound      = 0;
 static uint32_t netSent       = 0;
 static uint32_t hbCounter     = 0;
@@ -224,17 +230,20 @@ static void onRecv(const esp_now_recv_info_t* info, const uint8_t* data, int len
     memcpy(coreMacPending, info->src_addr, 6);
     coreFoundPending = true;
 
-  } else if (type == MSG_ADMIN && len >= (int)sizeof(jcmk_admin_msg_t)) {
+  } else if (type == MSG_ADMIN && len >= (int)offsetof(jcmk_admin_msg_t, role)) {
     // ---- JCMK binary admin (Piglet Core, JCMK Core) ----
     // Layout: magic[4], type, assignment_version, node_index, node_count,
-    //         start_channel_idx, end_channel_idx
-    // Only update if the assignment version has advanced (prevents stale replays).
+    //         start_channel_idx, end_channel_idx[, role]
+    // Base guard is the legacy (pre-role) size so an old/3rd-party 6-field admin
+    // still assigns channels. Channel fields gate on version; role applies always.
     const jcmk_admin_msg_t* adm = (const jcmk_admin_msg_t*)data;
     if (adm->assignment_version != assignVer) {
       assignVer = adm->assignment_version;
       startIdx  = adm->start_channel_idx;
       endIdx    = adm->end_channel_idx;
     }
+    if (len >= (int)sizeof(jcmk_admin_msg_t))
+      nodeRole = adm->role;   // applied unconditionally (idempotent)
     lastAdminMs = millis();
 
   } else if (type == 10 && len >= 11) {
@@ -275,6 +284,17 @@ static void onRecv(const esp_now_recv_info_t* info, const uint8_t* data, int len
           CHANNELS[startIdx], CHANNELS[endIdx], startIdx, endIdx);
       }
     }
+    // Piglet extension: the Core appends ";role=wifi|ble|both" so a node it
+    // flagged as Biscuit still gets its scan-role assignment. roleFromStr stops
+    // at ';' / end, so trailing tokens are fine.
+    const char* rStart = strstr(buf, "role=");
+    if (rStart) {
+      uint8_t r;
+      if (roleFromStr(rStart + 5, r)) {
+        if (r != nodeRole) Serial.printf("[NODE] role -> %s\n", roleToStr(r));
+        nodeRole = r;
+      }
+    }
     lastAdminMs = millis();
 
   } else if (type == MSG_HEARTBEAT && haveCore) {
@@ -311,6 +331,7 @@ static void resetToSearching() {
 //  Per-channel async scan tick
 // ================================================================
 static void scanTick() {
+  if (nodeRole == NODE_ROLE_BLE) return;  // BLE-only node: no Wi-Fi scanning
   uint8_t numCh = (endIdx >= startIdx) ? (endIdx - startIdx + 1) : 0;
   if (numCh == 0) return;
 
@@ -353,11 +374,19 @@ static void scanTick() {
   if (n == WIFI_SCAN_RUNNING) return;
 
   if (n > 0) {
+    // Log-once dedupe so the node stops flooding ESP-Now with repeat sightings
+    // of the same BSSID (the Core dedupes again, but this saves airtime).
+    static BleDedupe wifiSeen(200);
     netFound += (uint32_t)n;
     // Return to ch 6 before sending (Core only listens on ch 6)
     setChannel(ESPNOW_CH);
     for (int i = 0; i < n; i++) {
-      String line = WiFi.BSSIDstr(i) + "," + WiFi.SSID(i) + ","
+      String bssid = WiFi.BSSIDstr(i);
+      if (bssid.length() >= 17) {
+        uint8_t mac[6]; parseBda(bssid.c_str(), mac);
+        if (!wifiSeen.shouldEmit(mac, 0)) continue;  // already forwarded
+      }
+      String line = bssid + "," + WiFi.SSID(i) + ","
                   + authStr(WiFi.encryptionType(i)) + ","
                   + String(WiFi.channel(i)) + "," + String(WiFi.RSSI(i)) + ",W";
       sendText(line);
@@ -376,8 +405,8 @@ static void scanTick() {
 // ================================================================
 static const uint16_t BLE_DURATION_S = 5;    // scan-window length
 static const uint16_t BLE_INTERVAL_S = 30;   // seconds between windows
-static const uint32_t BLE_DEDUPE_S   = 300;  // per-device dedupe window
-static const size_t   BLE_MAX        = 500;  // dedupe + pending cap
+static const size_t   BLE_DEDUPE_MAX = 200;  // log-once dedupe ring cap
+static const size_t   BLE_MAX        = 500;  // pending hand-off FIFO cap
 
 static SemaphoreHandle_t          bleMutex      = nullptr;
 static BleDedupe*                 bleDedupe     = nullptr;
@@ -406,7 +435,7 @@ public:
     uint32_t now = millis();
 
     BleLock lk;
-    if (!bleDedupe->shouldEmit(bda, addrType, now)) return;
+    if (!bleDedupe->shouldEmit(bda, addrType)) return;
     bleLifetime++;
     if (blePending.size() >= BLE_MAX) blePending.pop_front();
 
@@ -442,7 +471,7 @@ static PnBleObserver bleObserver;
 
 static void bleBegin() {
   if (!bleMutex)  bleMutex  = xSemaphoreCreateMutex();
-  if (!bleDedupe) bleDedupe = new BleDedupe(BLE_DEDUPE_S, BLE_MAX);
+  if (!bleDedupe) bleDedupe = new BleDedupe(BLE_DEDUPE_MAX);
   NimBLEDevice::init("pigletnode");
   NimBLEDevice::setPower(ESP_PWR_LVL_P9);
   NimBLEScan* scan = NimBLEDevice::getScan();
@@ -467,7 +496,7 @@ static void bleTick() {
     esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
     bleScanning = false;
   }
-  if (bleDedupe) { BleLock lk; bleDedupe->expire(millis()); }
+  // Log-once ring self-bounds via FIFO eviction; nothing to prune.
 }
 
 // Forward one observation to the Core as a 212-byte type-6 frame.
@@ -526,7 +555,7 @@ static void nodeTick() {
   // idle, hold off the sweep while a window is active, return to ch 6 before
   // forwarding. Node mode shares one radio across Wi-Fi hop + ESP-Now + BLE.
   bool bleWin = false;
-  if (haveCore) {
+  if (haveCore && nodeRole != NODE_ROLE_WIFI) {  // WiFi-only node skips BLE
     static uint32_t lastBleMs = 0;
     if (!bleScanning && !scanActive &&
         (now - lastBleMs) >= (uint32_t)BLE_INTERVAL_S * 1000UL) {
