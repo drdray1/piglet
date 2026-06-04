@@ -89,6 +89,20 @@ The role is delivered to each node over the existing mesh link (it rides the cha
 Notes: a main-sketch node must also keep its own `bleEnabled=true` to honor a `ble`/`both` role (a `bleEnabled=false` node can only do Wi-Fi). Role edits are read once at boot — **reboot the Core** to apply. Old/3rd-party JCMK cores that don't send roles leave every node at `both`.
 
 
+### Blacklisting networks/devices from the save file
+
+Keep specific networks or devices out of the CSV entirely — e.g. your own home Wi-Fi or personal phones — with one entry per line in `wardriver.cfg`. MACs accept colons or bare 12-hex, and an inline `# label` is kept so the file documents itself:
+
+```
+blacklistMac=AA:BB:CC:DD:EE:FF    # My phone
+blacklistMac=112233445566         # Home router
+blacklistSsid=MyHomeNet           # Home network
+blacklistSsid=iPhone              # phone BLE name
+```
+
+Matching is **exact** — a MAC matches on the full address, an SSID/BLE-name on the whole string (case-insensitive); there are no wildcards, so `MyHomeNet` does not filter `MyHomeNet2`. The `blacklistSsid` list also matches BLE device names. Up to 16 entries of each. The filter runs at CSV write time, so on a **Core** it drops both locally-scanned and mesh-forwarded node observations. Reboot to apply edits.
+
+
 ## Bluetooth LE Wardriving
 
 Piglet can passively scan for Bluetooth LE devices alongside Wi-Fi and log them to the **same WiGLE-1.6 CSV** with `Type=BLE` — so a single upload to WiGLE or WDGoWars carries both Wi-Fi and BLE observations.
@@ -414,6 +428,13 @@ bleScanDuration=5      # BLE scan-window length, seconds (1-10)
 bleScanInterval=30     # seconds between windows (forced >= duration + 5)
 bleDedupeWindow=300    # per-device dedupe, seconds (0 = log every advert)
 bleMaxResults=500      # dedupe/queue cap (100-2000)
+
+# ------------------------------------------------------------
+# Save-file blacklist — never written to the CSV (exact match, up to 16 each)
+# One entry per line; MACs accept colons or bare 12-hex; inline '# label' kept.
+# ------------------------------------------------------------
+# blacklistMac=AA:BB:CC:DD:EE:FF    # My phone
+# blacklistSsid=MyHomeNet           # Home network
 ```
 
 

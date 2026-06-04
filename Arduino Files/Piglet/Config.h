@@ -2,6 +2,7 @@
 #include <Arduino.h>
 #include "PinMapDefs.h"
 #include "NodeRole.h"
+#include "Blacklist.h"
 
 struct Config {
   String wigleBasicToken;
@@ -65,6 +66,19 @@ struct Config {
   uint8_t       nodeDefaultRole = NODE_ROLE_BOTH;
   uint8_t       nodeRoleCount   = 0;
   NodeRoleEntry nodeRoles[CFG_MAX_NODE_ROLES] = {};
+
+  // ---- Save-file blacklist (Core/standalone only; SD-config-only) ----
+  // SSIDs/BLE-names and MAC/BSSIDs listed here are never written to the CSV.
+  // One entry per line (key repeated), with an optional inline '# label':
+  //   blacklistMac=AA:BB:CC:DD:EE:FF   # My phone     (colons or bare 12-hex)
+  //   blacklistSsid=MyHomeNet          # Home network (also matches BLE names)
+  // Matching is exact (MAC = 6-byte equality; SSID/name = case-insensitive whole
+  // string). Enforced at CSV write time, so it covers both local scans and
+  // mesh-forwarded node observations.
+  uint8_t       blacklistMacCount  = 0;
+  BlacklistMac  blacklistMacs[CFG_MAX_BLACKLIST]  = {};
+  uint8_t       blacklistSsidCount = 0;
+  BlacklistSsid blacklistSsids[CFG_MAX_BLACKLIST] = {};
 };
 
 const PinMap& detectPinsByChip();
@@ -75,6 +89,8 @@ String trimCopy(String s);
 bool parseKeyValueLine(const String& lineIn, String& keyOut, String& valOut);
 void cfgAssignKV(const String& k, const String& v);
 uint8_t cfgRoleForMac(const uint8_t mac[6]);  // node role by MAC, or nodeDefaultRole
+bool cfgBlacklistedMac(const uint8_t mac[6]);  // true if MAC/BSSID is blacklisted
+bool cfgBlacklistedSsid(const char* ssid);     // true if SSID/BLE-name is blacklisted
 void validateConfig();   // clamp cross-field constraints after a load
 bool loadConfigFromSD();
 bool saveConfigToSD();

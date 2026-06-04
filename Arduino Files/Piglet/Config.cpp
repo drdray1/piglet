@@ -100,6 +100,18 @@ void cfgAssignKV(const String& k, const String& v) {
     return;
   }
 
+  // Save-file blacklist: one entry per line (key repeated), exact match. The
+  // value is a MAC (12-hex or colon form) / SSID, optionally followed by an
+  // inline '# label'. blacklist*Add captures the label and upserts.
+  if (k == "blacklistMac") {
+    blacklistMacAdd(cfg.blacklistMacs, &cfg.blacklistMacCount, CFG_MAX_BLACKLIST, v.c_str());
+    return;
+  }
+  if (k == "blacklistSsid") {
+    blacklistSsidAdd(cfg.blacklistSsids, &cfg.blacklistSsidCount, CFG_MAX_BLACKLIST, v.c_str());
+    return;
+  }
+
   if (k == "wigleBasicToken") cfg.wigleBasicToken = v;
   else if (k == "homeSsid")   cfg.homeSsid = v;
   else if (k == "homePsk")    cfg.homePsk = v;
@@ -167,6 +179,14 @@ void cfgAssignKV(const String& k, const String& v) {
 
 uint8_t cfgRoleForMac(const uint8_t mac[6]) {
   return roleForMacIn(cfg.nodeRoles, cfg.nodeRoleCount, mac, cfg.nodeDefaultRole);
+}
+
+bool cfgBlacklistedMac(const uint8_t mac[6]) {
+  return blacklistHasMac(cfg.blacklistMacs, cfg.blacklistMacCount, mac);
+}
+
+bool cfgBlacklistedSsid(const char* ssid) {
+  return blacklistHasSsid(cfg.blacklistSsids, cfg.blacklistSsidCount, ssid);
 }
 
 // Clamp cross-field / out-of-range constraints that single-key parsing in
@@ -335,6 +355,28 @@ bool saveConfigToSD() {
     snprintf(line, sizeof(line), "node.%02X%02X%02X%02X%02X%02X=%s",
              m[0], m[1], m[2], m[3], m[4], m[5], roleToStr(cfg.nodeRoles[i].role));
     f.println(line);
+  }
+
+  f.println("");
+  f.println("# ---- Save-file blacklist (never written to the CSV) ----");
+  f.println("# One entry per line. Exact match; up to 16 of each. MACs accept");
+  f.println("# colons or bare 12-hex. SSIDs are case-insensitive and also match");
+  f.println("# BLE device names. Add an inline '# label' to note what each is.");
+  f.println("#   blacklistMac=AA:BB:CC:DD:EE:FF   # My phone");
+  f.println("#   blacklistSsid=MyHomeNet          # Home network");
+  for (uint8_t i = 0; i < cfg.blacklistMacCount; i++) {
+    const uint8_t* m = cfg.blacklistMacs[i].mac;
+    char line[80];
+    snprintf(line, sizeof(line), "blacklistMac=%02X:%02X:%02X:%02X:%02X:%02X",
+             m[0], m[1], m[2], m[3], m[4], m[5]);
+    f.print(line);
+    if (cfg.blacklistMacs[i].label[0]) { f.print("   # "); f.print(cfg.blacklistMacs[i].label); }
+    f.println("");
+  }
+  for (uint8_t i = 0; i < cfg.blacklistSsidCount; i++) {
+    f.print("blacklistSsid="); f.print(cfg.blacklistSsids[i].name);
+    if (cfg.blacklistSsids[i].label[0]) { f.print("   # "); f.print(cfg.blacklistSsids[i].label); }
+    f.println("");
   }
 
   f.flush();

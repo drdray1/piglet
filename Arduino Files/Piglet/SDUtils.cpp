@@ -241,6 +241,15 @@ void appendWigleRow(const String& mac, const String& ssid, const String& auth,
                     double lat, double lon, double altM, double accM) {
   if (!sdOk || !logFile) return;
 
+  // Save-file blacklist: drop before dedup so a blacklisted BSSID never occupies
+  // a dedup-ring slot. Covers local scans and mesh-forwarded node observations.
+  if (cfgBlacklistedSsid(ssid.c_str())) return;
+  if (mac.length() >= 17) {
+    uint8_t bl[6];
+    parseBda(mac.c_str(), bl);
+    if (cfgBlacklistedMac(bl)) return;
+  }
+
   // Suppress repeat sightings of the same BSSID (log-once, see gWifiSeen).
   if (mac.length() >= 17) {
     if (!gWifiSeen) gWifiSeen = new BleDedupe(cfg.bleMaxResults);
@@ -325,6 +334,15 @@ void appendBleRow(const String& bda, const String& name, uint8_t addrType,
                   double lat, double lon, double altM, double accM,
                   const String& serviceUuids, uint16_t mfgrId) {
   if (!sdOk || !logFile) return;
+
+  // Save-file blacklist: BLE name is matched against the same SSID list, the BDA
+  // against the MAC list. Exact match (see Blacklist.h).
+  if (cfgBlacklistedSsid(name.c_str())) return;
+  {
+    uint8_t bl[6];
+    parseBda(bda.c_str(), bl);
+    if (cfgBlacklistedMac(bl)) return;
+  }
 
   // Format through the shared, host-tested formatter so the on-disk layout
   // matches test/test_ble_csv.cpp exactly. std::string in, Arduino String out.
