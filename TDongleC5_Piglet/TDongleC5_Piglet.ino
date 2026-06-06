@@ -40,9 +40,12 @@
 #include <math.h>
 #include <esp_now.h>
 #include "esp_wifi.h"
+#include "driver/gpio.h"
+#include "soc/gpio_sig_map.h"
+#include "esp32-hal-matrix.h"
 
 // Firmware version
-#define FIRMWARE_VERSION "v2.52"
+#define FIRMWARE_VERSION "v2.56"
 
 // ---------------- Pins (T-DONGLE C5) ----------------
 struct PinMap {
@@ -245,16 +248,21 @@ static void apa102Write(uint8_t r, uint8_t g, uint8_t b, uint8_t brightness = 8)
   digitalWrite(PINS.tft_cs, HIGH);
   digitalWrite(PINS.sd_cs, HIGH);
 
-  // Temporarily take over the data/clock pins
-  pinMode(PINS.led_di, OUTPUT);
-  pinMode(PINS.led_ci, OUTPUT);
+  // Temporarily switch data/clock pins from SPI to GPIO output mode for
+  // bit-banging. Using the IDF gpio_set_direction() instead of Arduino's
+  // pinMode() avoids triggering the peripheral manager, which would
+  // permanently detach these pins from the SPI bus (because SPI.begin()
+  // is a no-op when the bus is already started, so pins never get
+  // re-attached). The SPI peripheral and SD card remain intact.
+  gpio_set_direction((gpio_num_t)PINS.led_di, GPIO_MODE_OUTPUT);
+  gpio_set_direction((gpio_num_t)PINS.led_ci, GPIO_MODE_OUTPUT);
 
   auto sendByte = [](uint8_t val) {
     for (int i = 7; i >= 0; i--) {
-      digitalWrite(PINS.led_di, (val >> i) & 1);
-      digitalWrite(PINS.led_ci, HIGH);
+      gpio_set_level((gpio_num_t)PINS.led_di, (val >> i) & 1);
+      gpio_set_level((gpio_num_t)PINS.led_ci, 1);
       delayMicroseconds(1);
-      digitalWrite(PINS.led_ci, LOW);
+      gpio_set_level((gpio_num_t)PINS.led_ci, 0);
       delayMicroseconds(1);
     }
   };
@@ -272,19 +280,19 @@ static void apa102Write(uint8_t r, uint8_t g, uint8_t b, uint8_t brightness = 8)
   // End frame: 32 bits of 1
   for (int i = 0; i < 4; i++) sendByte(0xFF);
 
-  // Restore SPI peripheral routing — pinMode(OUTPUT) above disconnects pins from the
-  // SPI GPIO matrix (gpio_matrix_out sets SIG_GPIO_OUT_IDX). Calling SPI.begin() on an
-  // already-running bus re-attaches MOSI (GPIO2) and MISO (GPIO7) without stopping the
-  // peripheral. SPI.end() must NOT be called here — it destroys the bus state and
-  // orphans the SD card's registered SPI device handle, causing all subsequent SD
-  // writes (including CSV logging) to silently fail.
-  SPI.begin(PINS.sd_sck, PINS.sd_miso, PINS.sd_mosi);
+  // Restore SPI peripheral routing — reconnect the SPI MOSI and MISO
+  // signals to the physical pins via the GPIO matrix. pinMatrixOutAttach
+  // and pinMatrixInAttach are low-level wrappers around gpio_matrix_out/in
+  // that bypass the peripheral manager.
+  pinMatrixOutAttach(PINS.sd_mosi, FSPID_IN_IDX, false, false);
+  gpio_set_direction((gpio_num_t)PINS.sd_miso, GPIO_MODE_INPUT);
+  pinMatrixInAttach(PINS.sd_miso, FSPIQ_OUT_IDX, false);
 }
 
 static void ledOff()   { apa102Write(0, 0, 0, 0); }
-static void ledGreen() { apa102Write(0, 20, 0, 4); }
-static void ledRed()   { apa102Write(20, 0, 0, 4); }
-static void ledBlue()  { apa102Write(0, 0, 20, 4); }
+static void ledGreen() { apa102Write(0, 10, 0, 2); }
+static void ledRed()   { apa102Write(10, 0, 0, 2); }
+static void ledBlue()  { apa102Write(0, 0, 10, 2); }
 
 // Pulse state for non-blocking LED blink
 static uint32_t ledPulseMs = 0;
@@ -331,14 +339,14 @@ static String iso8601NowUTC() {
   if (gps.date.isValid() && gps.time.isValid() &&
       gps.date.age() < 5000 && gps.time.age() < 5000) {
     char buf[32];
-    snprintf(buf, sizeof(buf), "%04d-%02d-%02dT%02d:%02d:%02dZ",
+    snprintf(buf, sizeof(buf), "%04d-%02d-%02d %02d:%02d:%02d",
              gps.date.year(), gps.date.month(), gps.date.day(),
              gps.time.hour(), gps.time.minute(), gps.time.second());
     return String(buf);
   }
   uint32_t s = millis() / 1000;
   char buf[32];
-  snprintf(buf, sizeof(buf), "1970-01-01T00:%02lu:%02luZ",
+  snprintf(buf, sizeof(buf), "1970-01-01 00:%02lu:%02lu",
            (unsigned long)((s/60)%60), (unsigned long)(s%60));
   return String(buf);
 }
@@ -448,6 +456,10 @@ static String normalizeSdPath(const char* dir, const char* nameIn) {
   return d + "/" + n;
 }
 
+// Row limit per CSV: ~120 bytes/row x 100k = ~12 MB, under WDGoWars 15 MB cap.
+static const uint32_t CSV_MAX_ROWS = 100000;
+static uint32_t       csvRowCount  = 0;
+
 // Sanitise device name for filename/header use
 static String tdongleSanitiseName(const String& raw) {
   String s = raw; s.replace(" ", "_");
@@ -508,9 +520,10 @@ static bool openLogFile() {
   logFile.print(FIRMWARE_VERSION);
   logFile.print(",model=LilyGo-T-Dongle-C5,release=1,device=");
   logFile.print(deviceField);
-  logFile.println(",board=LilyGo-T-Dongle-C5,brand=Piglet");
+  logFile.println(",display=TFT-ST7735-80x160,board=LilyGo-T-Dongle-C5,brand=Piglet,star=Sol,body=3,subBody=0");
   logFile.println("MAC,SSID,AuthMode,FirstSeen,Channel,Frequency,RSSI,CurrentLatitude,CurrentLongitude,AltitudeMeters,AccuracyMeters,RCOIs,MfgrId,Type");
   logFile.flush();
+  csvRowCount = 0;
   return true;
 }
 
@@ -549,6 +562,13 @@ static void appendWigleRow(const String& mac, const String& ssid, const String& 
   static WifiSeenRing gWigleSeen;
   if (!gWigleSeen.firstTime(mac)) return;
 
+  // Rotate CSV before it exceeds the WDGoWars 15 MB upload limit
+  if (csvRowCount >= CSV_MAX_ROWS) {
+    Serial.println("[SD] CSV row limit reached, rotating log file");
+    closeLogFile();
+    if (!openLogFile()) return;
+  }
+
   String safeSsid = ssid;
   safeSsid.replace("\"", "\"\"");
 
@@ -570,10 +590,11 @@ static void appendWigleRow(const String& mac, const String& ssid, const String& 
   line += String(lon, 6); line += ",";
   line += String(altM, 1); line += ",";
   line += String(accM, 1); line += ",";
-  line += ",0,WIFI"; // RCOIs (empty), MfgrId (0), Type
+  line += ",,WIFI"; // RCOIs (empty), MfgrId (empty), Type
 
   digitalWrite(PINS.tft_cs, HIGH);
   size_t written = logFile.println(line);
+  csvRowCount++;
 
   // Detect silent write failure — if println() returns 0 for a non-empty line,
   // the SD card or file handle is broken. Attempt to reopen the log file once;
@@ -1269,8 +1290,8 @@ static void updateTFT(float speedValue) {
   prevGpsFix = gpsHasFix;
   y += line;
 
-  // IP / AP
-  if (forceAll || prevIp != ipNow || prevSta != staNow) {
+  // IP / AP — always repaint while the AP window is active so the countdown updates
+  if (forceAll || prevIp != ipNow || prevSta != staNow || apWindowActive) {
     tft.fillRect(0, y, W, line, BLACK);
     tft.setCursor(2, y + 2);
     if (staNow) {
@@ -1778,7 +1799,7 @@ static const uint32_t JCMK_REQ_INIT_MS     = 300;
 static const uint32_t JCMK_REQ_MAX_MS      = 5000;
 static const uint32_t JCMK_HB_MS          = 5000;
 static const uint32_t NODE_SCAN_DWELL_MS  = 80;    // ms per channel (JCMK CHANNEL_TIMER)
-static const uint32_t NODE_ADMIN_WIN_MS   = 300;   // ch-6 window after each full cycle
+static const uint32_t NODE_ADMIN_WIN_MS   = 500;   // ch-6 window after each scan cycle
 #define JCMK_TEXT_MAX 200
 
 enum JcmkMsgType : uint8_t {
@@ -1853,7 +1874,7 @@ static volatile bool  jcmkCoreFoundPending = false;
 static uint8_t        jcmkCoreMacPending[6] = {0};
 
 // ---- Core mode state ----
-#define CORE_MAX_NODES 4
+#define CORE_MAX_NODES 12
 struct CoreNodeInfo {
   bool     active;
   uint8_t  mac[6];
@@ -1870,10 +1891,10 @@ static uint8_t      coreAssignVer   = 0;
 static uint32_t     coreLastHbMs    = 0;
 static uint32_t     coreHbCounter   = 0;
 static const uint32_t CORE_HB_MS         = 5000;
-static const uint32_t CORE_NODE_TIMEOUT  = 45000;  // 45 s — accounts for blocking scan latency
+static const uint32_t CORE_NODE_TIMEOUT  = 90000;  // 90 s — generous for many-node ESP-Now collisions
 
-#define CORE_REQ_QUEUE   4
-#define CORE_TEXT_QUEUE 64   // large enough for burst from two nodes per cycle
+#define CORE_REQ_QUEUE  16
+#define CORE_TEXT_QUEUE 192  // sized for burst from 12 nodes x ~15 networks each
 struct CorReqSlot  { uint8_t mac[6]; bool isBiscuit; };
 struct CorTextSlot { char    line[JCMK_TEXT_MAX + 1]; };
 static CorReqSlot         coreReqBuf[CORE_REQ_QUEUE];
@@ -2145,12 +2166,12 @@ static void coreResendAdminToAll() {
 }
 
 static void coreSendHeartbeatToAll() {
-  // Use full-size jcmk_text_msg_t (212 bytes) so Biscuit Node accepts it.
+  // Broadcast a single heartbeat instead of per-node unicast.
+  // Reduces ch 6 congestion from 12 sends down to 1.
   jcmk_text_msg_t msg = {};
   memcpy(msg.magic, JCMK_MAGIC, 4);
   msg.type = JCMK_MSG_HEARTBEAT; msg.counter = ++coreHbCounter; msg.len = 0;
-  for (uint8_t i = 0; i < CORE_MAX_NODES; i++)
-    if (coreNodes[i].active) esp_now_send(coreNodes[i].mac, (uint8_t*)&msg, sizeof(msg));
+  esp_now_send(JCMK_BCAST, (uint8_t*)&msg, sizeof(msg));
 }
 
 static void coreParseAndLogText(const char* line) {
@@ -2265,7 +2286,8 @@ static void nodeDoScanTick() {
       jcmkSetChannel(JCMK_ESPNOW_CH);
       if (jcmkHaveCore) { jcmkSendHeartbeat(); jcmkLastHbMs = millis(); }
       nodeScanAdminWin = true;
-      nodeScanAdminMs  = millis();
+      // Random jitter (0-200 ms) staggers admin windows across nodes
+      nodeScanAdminMs  = millis() + (uint32_t)(esp_random() % 200);
       return;
     }
 
@@ -3094,6 +3116,7 @@ static void stopAPIfAllowed() {
   if (shouldClose) {
     Serial.printf("[WIFI] Stopping AP (%s).\n", reason);
     WiFi.softAPdisconnect(true); apWindowActive = false;
+    forceStatusFullRedraw();
     apExtended = false; apForceClose = false;
     WiFi.setAutoReconnect(false); WiFi.persistent(false);
     WiFi.disconnect(true, true); delay(50);
@@ -3179,10 +3202,10 @@ static void doScanOnce() {
   static bool     scanInProgress  = false;
   static uint8_t  zeroScanCount   = 0;
 
-  // aggressive:  100 ms/channel dwell, 1500 ms minimum gap between scan starts
-  // powersaving: 200 ms/channel dwell, 10000 ms gap
+  // aggressive:  100 ms/channel dwell, 4500 ms gap (gives radio ~3 s idle per cycle)
+  // powersaving: 200 ms/channel dwell, 12000 ms gap
   bool powersave   = (cfg.scanMode == "powersaving");
-  uint32_t gapMs   = powersave ? 10000 : 1500;
+  uint32_t gapMs   = powersave ? 12000 : 4500;
   uint32_t dwellMs = powersave ?   200 :  100;
 
   // Check if the async scan launched last iteration has finished
@@ -3226,6 +3249,12 @@ static void doScanOnce() {
     Serial.printf("[SCAN] scanNetworks start failed (%d)\n", rc);
     lastScanStartMs = millis();
   }
+}
+
+// Enable WiFi modem sleep so the radio powers down between scan cycles.
+// Called once after boot and after any WiFi mode change that re-enters STA.
+static void enableModemSleep() {
+  esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
 }
 
 // ---------------- Page cycling ----------------
@@ -3306,6 +3335,9 @@ void setup() {
   pinMode(PINS.sd_cs, OUTPUT);
   digitalWrite(PINS.sd_cs, HIGH);
 
+  // Reduce CPU clock to lower heat — 80 MHz is plenty for scanning + TFT + GPS.
+  setCpuFrequencyMhz(80);
+
   Serial.begin(115200);
   delay(300);
   // Print immediately — if this line never appears, the device is crashing before
@@ -3356,9 +3388,9 @@ void setup() {
   tft.setRotation(cfg.rotateScreen180 ? 2 : 0);  // Portrait (0=normal, 2=180° flip)
   tft.fillScreen(BLACK);
   tft.setTextColor(WHITE, BLACK);
-  // Backlight: active-LOW (P-ch MOSFET gate)
-  pinMode(PINS.tft_bl, OUTPUT);
-  digitalWrite(PINS.tft_bl, LOW);
+  // Backlight at ~50% via PWM (active-LOW P-ch MOSFET gate: 0=full, 255=off)
+  ledcAttach(PINS.tft_bl, 5000, 8);  // 5 kHz, 8-bit resolution
+  ledcWrite(PINS.tft_bl, 128);       // duty 128/255 ≈ 50% brightness
 
   // Splash
   bootSlogan = pickSplashSlogan();
@@ -3500,6 +3532,8 @@ void setup() {
 
   updateTFT(0);
   ledOff();
+  enableModemSleep();
+  Serial.printf("[BOOT] CPU: %lu MHz\n", (unsigned long)getCpuFrequencyMhz());
   Serial.println("=== Boot complete ===");
 }
 

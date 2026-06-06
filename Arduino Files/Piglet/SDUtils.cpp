@@ -142,6 +142,12 @@ bool moveToUploaded(const String& srcPath) {
 
 // ---- Log file ----
 
+// Row limit per CSV file: ~120 bytes/row × 100k = ~12 MB, safely under the
+// WDGoWars 15 MB upload cap. When the limit is reached, the active CSV is
+// closed and a fresh one is opened with proper WiGLE headers.
+static const uint32_t CSV_MAX_ROWS = 100000;
+static uint32_t       csvRowCount  = 0;
+
 // Sanitise a user-provided device name for safe use in filenames.
 // Keeps alphanumerics, hyphens, underscores; replaces spaces with _;
 // strips everything else; truncates to 20 chars.
@@ -219,10 +225,11 @@ bool openLogFile() {
   logFile.print(FIRMWARE_VERSION);
   logFile.print(",model="); logFile.print(boardModel);
   logFile.print(",release=1,device="); logFile.print(deviceField);
-  logFile.print(",board="); logFile.print(boardModel);
-  logFile.println(",brand=Piglet");
+  logFile.print(",display=SSD1306-128x64,board="); logFile.print(boardModel);
+  logFile.println(",brand=Piglet,star=Sol,body=3,subBody=0");
   logFile.println("MAC,SSID,AuthMode,FirstSeen,Channel,Frequency,RSSI,CurrentLatitude,CurrentLongitude,AltitudeMeters,AccuracyMeters,RCOIs,MfgrId,Type");
   logFile.flush();
+  csvRowCount = 0;
 
   Serial.println("[SD] Log file initialized with WiGLE headers");
   return true;
@@ -258,6 +265,13 @@ void appendWigleRow(const String& mac, const String& ssid, const String& auth,
     if (!gWifiSeen->shouldEmit(bssid, 0)) return;
   }
 
+  // Rotate CSV before it exceeds the WDGoWars 15 MB upload limit
+  if (csvRowCount >= CSV_MAX_ROWS) {
+    Serial.println("[SD] CSV row limit reached, rotating log file");
+    closeLogFile();
+    if (!openLogFile()) return;
+  }
+
   String safeSsid = ssid;
   safeSsid.replace("\"", "\"\"");
 
@@ -279,7 +293,7 @@ void appendWigleRow(const String& mac, const String& ssid, const String& auth,
   line += String(lon, 6); line += ",";
   line += String(altM, 1); line += ",";
   line += String(accM, 1); line += ",";
-  line += ",0,WIFI"; // RCOIs (empty), MfgrId (0), Type
+  line += ",,WIFI"; // RCOIs (empty), MfgrId (empty), Type
 
   writeCsvLine(line);
 }
@@ -292,6 +306,7 @@ static void writeCsvLine(const String& line) {
   if (!sdOk || !logFile) return;
 
   size_t written = logFile.println(line);
+  csvRowCount++;
 
   // Detect silent write failure — if println() returns 0 for a non-empty line,
   // the SD card or file handle is broken. Attempt to reopen the log file once;
