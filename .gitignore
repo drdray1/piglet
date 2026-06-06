@@ -3,3 +3,6 @@
 *.Zip
 *.ZIP
 AGENTS.md
+
+# Arduino build artifacts (compiled binaries, maps, sdkconfig)
+build/
