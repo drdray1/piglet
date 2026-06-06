@@ -175,6 +175,10 @@ void cfgAssignKV(const String& k, const String& v) {
     int n = v.toInt();
     if (n >= 100 && n <= 2000) cfg.bleMaxResults = (uint16_t)n;
   }
+  else if (k == "dedupEnabled") {
+    String vv = v; vv.toLowerCase();
+    cfg.dedupEnabled = (vv == "true" || vv == "1");
+  }
 }
 
 uint8_t cfgRoleForMac(const uint8_t mac[6]) {
@@ -339,6 +343,8 @@ bool saveConfigToSD() {
   f.print("bleScanInterval="); f.println(cfg.bleScanInterval);
   f.println("# Log-once dedupe ring + pending FIFO cap (memory knob). 100-2000.");
   f.print("bleMaxResults=");   f.println(cfg.bleMaxResults);
+  f.println("# Log each MAC/BSSID once (true) or log every sighting (false).");
+  f.print("dedupEnabled=");    f.println(cfg.dedupEnabled ? "true" : "false");
 
   f.println("");
   f.println("# ---- Mesh per-node scan roles (Core only) ----");

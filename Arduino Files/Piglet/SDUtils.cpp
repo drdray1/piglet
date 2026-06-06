@@ -258,7 +258,9 @@ void appendWigleRow(const String& mac, const String& ssid, const String& auth,
   }
 
   // Suppress repeat sightings of the same BSSID (log-once, see gWifiSeen).
-  if (mac.length() >= 17) {
+  // Skipped entirely when dedup is disabled — every row is then written and the
+  // ring is never allocated.
+  if (cfg.dedupEnabled && mac.length() >= 17) {
     if (!gWifiSeen) gWifiSeen = new BleDedupe(cfg.bleMaxResults);
     uint8_t bssid[6];
     parseBda(mac.c_str(), bssid);

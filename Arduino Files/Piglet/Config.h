@@ -58,6 +58,10 @@ struct Config {
   // cap. 100–2000; default 200 matches the upstream JCMK/Biscuit mac_history.
   uint16_t bleMaxResults   = 200;
 
+  // Log-once dedup master switch. true = each MAC/BSSID logged once per boot
+  // (WiFi + BLE). false = log every sighting. Reuses the bleMaxResults ring cap.
+  bool     dedupEnabled    = true;
+
   // ---- Mesh per-node scan roles (Core only; SD-config-only management) ----
   // The Core assigns each node a task by full MAC via `node.<12hex>=wifi|ble|both`
   // lines in wardriver.cfg. Unlisted/new nodes use nodeDefaultRole. Roles are

@@ -102,6 +102,19 @@ blacklistSsid=iPhone              # phone BLE name
 
 Matching is **exact** — a MAC matches on the full address, an SSID/BLE-name on the whole string (case-insensitive); there are no wildcards, so `MyHomeNet` does not filter `MyHomeNet2`. The `blacklistSsid` list also matches BLE device names. Up to 16 entries of each. The filter runs at CSV write time, so on a **Core** it drops both locally-scanned and mesh-forwarded node observations. Reboot to apply edits.
 
+### Log-once dedup
+
+By default Piglet logs each Wi-Fi BSSID and each BLE MAC **once per boot** — repeat sightings of the same device are suppressed so the CSV stays compact and (on a Core) the mesh isn't flooded. The ring holding recently-seen addresses is capped by `bleMaxResults`.
+
+Turn it off with a single global switch in `wardriver.cfg` when you want **every** sighting written — e.g. for dwell-time analysis, RSSI-over-time, or debugging:
+
+```
+dedupEnabled=true     # default: each MAC/BSSID logged once
+dedupEnabled=false    # log every sighting
+```
+
+This covers both Wi-Fi and BLE on the main Piglet firmware (the Core / single-device setup). Blacklisting always runs first, so blacklisted devices are dropped regardless of this setting. The dedicated PigletNode firmware keeps its own log-once forwarding and is not affected by this flag. Reboot to apply.
+
 
 ## Bluetooth LE Wardriving
 
@@ -114,7 +127,7 @@ Piglet can passively scan for Bluetooth LE devices alongside Wi-Fi and log them 
 - **On the OLED:** the Status and Networks pages show a live BLE count; the mesh page shows BLE received (Core) and forwarded (Node).
 - **Library:** requires **NimBLE-Arduino 2.1.x** for any BLE build. See [`LIBRARIES.md`](LIBRARIES.md).
 
-Tuning knobs in `wardriver.cfg`: `bleScanDuration` (window length), `bleScanInterval` (time between windows), `bleDedupeWindow` (per-device suppress), `bleMaxResults` (memory cap). The mesh wire format is documented in [`docs/PROTOCOL.md`](docs/PROTOCOL.md).
+Tuning knobs in `wardriver.cfg`: `bleScanDuration` (window length), `bleScanInterval` (time between windows), `bleMaxResults` (memory cap), `dedupEnabled` (log-once on/off — see [Log-once dedup](#log-once-dedup)). The mesh wire format is documented in [`docs/PROTOCOL.md`](docs/PROTOCOL.md).
 
 
 ## PigletNode — Standalone Mesh Node
@@ -426,8 +439,8 @@ rotateScreen180=false
 bleEnabled=false
 bleScanDuration=5      # BLE scan-window length, seconds (1-10)
 bleScanInterval=30     # seconds between windows (forced >= duration + 5)
-bleDedupeWindow=300    # per-device dedupe, seconds (0 = log every advert)
-bleMaxResults=500      # dedupe/queue cap (100-2000)
+bleMaxResults=200      # log-once dedupe ring + queue cap (100-2000)
+dedupEnabled=true      # log each MAC/BSSID once (false = log every sighting)
 
 # ------------------------------------------------------------
 # Save-file blacklist — never written to the CSV (exact match, up to 16 each)
