@@ -54,7 +54,8 @@ public:
     uint32_t now = millis();
 
     Lock lk;
-    if (!gDedupe->shouldEmit(bda, addrType)) return;  // already seen
+    // Log-once gate; when dedup is disabled every observation is emitted.
+    if (cfg.dedupEnabled && !gDedupe->shouldEmit(bda, addrType)) return;  // already seen
     gLifetimeUnique++;
 
     if (gPending.size() >= gMaxResults) gPending.pop_front();  // bound memory
