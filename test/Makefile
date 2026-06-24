@@ -8,7 +8,7 @@ CXXFLAGS ?= -std=c++17 -Wall -Wextra -Wno-unused-parameter -O0 -g
 # shims rather than failing or pulling the real headers in.
 INCLUDES := -I stubs -I ../Arduino\ Files/Piglet -I .
 
-SOURCES := test_main.cpp test_scanner.cpp test_webui_masking.cpp test_wigle_upload.cpp test_channel_classification.cpp test_ble_csv.cpp test_ble_dedupe.cpp test_wifi_dedupe.cpp test_jcmk_ble.cpp test_node_role.cpp test_blacklist.cpp
+SOURCES := test_main.cpp test_scanner.cpp test_webui_masking.cpp test_wigle_upload.cpp test_channel_classification.cpp test_ble_csv.cpp test_ble_dedupe.cpp test_wifi_dedupe.cpp test_jcmk_ble.cpp test_node_role.cpp test_blacklist.cpp test_config_keys.cpp test_csv_filter_order.cpp
 BINARY  := tests.out
 
 .PHONY: test build clean
