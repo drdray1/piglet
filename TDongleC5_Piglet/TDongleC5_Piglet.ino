@@ -44,6 +44,15 @@
 #include "soc/gpio_sig_map.h"
 #include "esp32-hal-matrix.h"
 
+// Piglet parity headers (pure C / POD — no extra library deps).
+// Order matters: BleScanner.h defines BleObservation, which JcmkBle.h needs;
+// NodeRole.h must precede Blacklist.h (Blacklist.h reuses parseMac12()).
+#include "BleScanner.h"   // BleObservation POD (BleScanner class gated behind PIGLET_HAS_BLE)
+#include "BleCsv.h"       // formatBleRow, formatBda/parseBda, bleChannelToFreq, bleAddrTypeToString
+#include "JcmkBle.h"      // jcmk_ble_obs_msg_t (type 6 wire frame), jcmkBleParse
+#include "NodeRole.h"     // per-node scan roles (wifi/ble/both)
+#include "Blacklist.h"    // save-file blacklist (MAC / SSID-BLE-name)
+
 // Firmware version
 #define FIRMWARE_VERSION "v2.56"
 
@@ -144,6 +153,18 @@ struct Config {
   String meshModeOnBoot = "none";
   // Rotate TFT screen 180° (true = upside-down mount). Requires reboot.
   bool rotateScreen180 = false;
+
+  // ---- Per-node scan roles (Core assigns each node a task by MAC) ----
+  // Role for any node NOT listed in nodeRoles[]. (wifi | ble | both)
+  uint8_t      nodeDefaultRole = NODE_ROLE_BOTH;
+  NodeRoleEntry nodeRoles[CFG_MAX_NODE_ROLES];
+  uint8_t      nodeRoleCount = 0;
+
+  // ---- Save-file blacklist (never written to CSV; exact match) ----
+  BlacklistMac  blacklistMacs[CFG_MAX_BLACKLIST];
+  uint8_t       blacklistMacCount = 0;
+  BlacklistSsid blacklistSsids[CFG_MAX_BLACKLIST];
+  uint8_t       blacklistSsidCount = 0;
 };
 
 Config cfg;
@@ -384,6 +405,21 @@ static void cfgAssignKV(const String& k, const String& v) {
   else if (k == "deviceName")      cfg.deviceName = v;
   else if (k == "meshModeOnBoot") { String vv = v; vv.toLowerCase(); if (vv == "core" || vv == "node" || vv == "none") cfg.meshModeOnBoot = vv; }
   else if (k == "rotateScreen180") { String vv = v; vv.toLowerCase(); cfg.rotateScreen180 = (vv == "true" || vv == "1"); }
+  else if (k == "nodeDefaultRole") { uint8_t r; if (roleFromStr(v.c_str(), r)) cfg.nodeDefaultRole = r; }
+  else if (k.startsWith("node.")) {
+    // node.<12hex>=wifi|ble|both — per-node scan role addressed by full MAC.
+    uint8_t mac[6], role;
+    String macHex = k.substring(5);
+    if (parseMac12(macHex.c_str(), mac) && roleFromStr(v.c_str(), role))
+      nodeRoleUpsert(cfg.nodeRoles, &cfg.nodeRoleCount, CFG_MAX_NODE_ROLES, mac, role);
+  }
+  else if (k == "blacklistMac")  blacklistMacAdd(cfg.blacklistMacs, &cfg.blacklistMacCount, CFG_MAX_BLACKLIST, v.c_str());
+  else if (k == "blacklistSsid") blacklistSsidAdd(cfg.blacklistSsids, &cfg.blacklistSsidCount, CFG_MAX_BLACKLIST, v.c_str());
+}
+
+// Resolve a node's scan role: explicit node.<mac> entry, else nodeDefaultRole.
+static uint8_t cfgRoleForMac(const uint8_t mac[6]) {
+  return roleForMacIn(cfg.nodeRoles, cfg.nodeRoleCount, mac, cfg.nodeDefaultRole);
 }
 
 static bool saveConfigToSD() {
@@ -553,44 +589,20 @@ struct WifiSeenRing {
   size_t cap_;
 };
 
-static void appendWigleRow(const String& mac, const String& ssid, const String& auth,
-                           const String& firstSeen, int channel, int rssi,
-                           double lat, double lon, double altM, double accM) {
+// ---- Blacklist helpers (save-file blacklist; exact match, see Blacklist.h) ----
+static bool cfgBlacklistedMac(const uint8_t mac[6]) {
+  return blacklistHasMac(cfg.blacklistMacs, cfg.blacklistMacCount, mac);
+}
+static bool cfgBlacklistedSsid(const char* ssid) {
+  return blacklistHasSsid(cfg.blacklistSsids, cfg.blacklistSsidCount, ssid);
+}
+
+// Shared CSV row writer: handles the silent-write-failure recovery and the
+// throttled flush cadence for every row, Wi-Fi or BLE. Both appendWigleRow and
+// appendBleRow funnel through here so they share one flush timer and recovery
+// path (they write to the same file). Caller has already filtered/deduped.
+static void writeCsvLine(const String& line) {
   if (!sdOk || !logFile) return;
-
-  // Log each BSSID once (covers solo + Core node-forwarded writes via one ring).
-  static WifiSeenRing gWigleSeen;
-  if (!gWigleSeen.firstTime(mac)) return;
-
-  // Rotate CSV before it exceeds the WDGoWars 15 MB upload limit
-  if (csvRowCount >= CSV_MAX_ROWS) {
-    Serial.println("[SD] CSV row limit reached, rotating log file");
-    closeLogFile();
-    if (!openLogFile()) return;
-  }
-
-  String safeSsid = ssid;
-  safeSsid.replace("\"", "\"\"");
-
-  String line;
-  line.reserve(256);
-  line += mac; line += ",";
-  line += "\""; line += safeSsid; line += "\",";
-  line += auth; line += ",";
-  line += firstSeen; line += ",";
-  line += String(channel); line += ",";
-  // Frequency in MHz (WiGLE 1.6)
-  uint32_t freq = 0;
-  if      (channel >= 1  && channel <= 13) freq = 2407u + (uint32_t)channel * 5;
-  else if (channel == 14)                  freq = 2484u;
-  else if (channel >= 32)                  freq = 5000u + (uint32_t)channel * 5;
-  line += String(freq); line += ",";
-  line += String(rssi); line += ",";
-  line += String(lat, 6); line += ",";
-  line += String(lon, 6); line += ",";
-  line += String(altM, 1); line += ",";
-  line += String(accM, 1); line += ",";
-  line += ",,WIFI"; // RCOIs (empty), MfgrId (empty), Type
 
   digitalWrite(PINS.tft_cs, HIGH);
   size_t written = logFile.println(line);
@@ -628,6 +640,89 @@ static void appendWigleRow(const String& mac, const String& ssid, const String& 
     lastFlushMs = millis();
     linesSinceFlush = 0;
   }
+}
+
+static void appendWigleRow(const String& mac, const String& ssid, const String& auth,
+                           const String& firstSeen, int channel, int rssi,
+                           double lat, double lon, double altM, double accM) {
+  if (!sdOk || !logFile) return;
+
+  // Save-file blacklist: drop before dedup so a blacklisted BSSID never occupies
+  // a dedup-ring slot. Covers local scans and mesh-forwarded node observations.
+  if (cfgBlacklistedSsid(ssid.c_str())) return;
+  if (mac.length() >= 17) {
+    uint8_t bl[6];
+    parseBda(mac.c_str(), bl);
+    if (cfgBlacklistedMac(bl)) return;
+  }
+
+  // Log each BSSID once (covers solo + Core node-forwarded writes via one ring).
+  static WifiSeenRing gWigleSeen;
+  if (!gWigleSeen.firstTime(mac)) return;
+
+  // Rotate CSV before it exceeds the WDGoWars 15 MB upload limit
+  if (csvRowCount >= CSV_MAX_ROWS) {
+    Serial.println("[SD] CSV row limit reached, rotating log file");
+    closeLogFile();
+    if (!openLogFile()) return;
+  }
+
+  String safeSsid = ssid;
+  safeSsid.replace("\"", "\"\"");
+
+  String line;
+  line.reserve(256);
+  line += mac; line += ",";
+  line += "\""; line += safeSsid; line += "\",";
+  line += auth; line += ",";
+  line += firstSeen; line += ",";
+  line += String(channel); line += ",";
+  // Frequency in MHz (WiGLE 1.6)
+  uint32_t freq = 0;
+  if      (channel >= 1  && channel <= 13) freq = 2407u + (uint32_t)channel * 5;
+  else if (channel == 14)                  freq = 2484u;
+  else if (channel >= 32)                  freq = 5000u + (uint32_t)channel * 5;
+  line += String(freq); line += ",";
+  line += String(rssi); line += ",";
+  line += String(lat, 6); line += ",";
+  line += String(lon, 6); line += ",";
+  line += String(altM, 1); line += ",";
+  line += String(accM, 1); line += ",";
+  line += ",,WIFI"; // RCOIs (empty), MfgrId (empty), Type
+
+  writeCsvLine(line);
+}
+
+// Append one WigleWifi-1.6 BLE row (Type=BLE). Mirrors appendWigleRow's filter
+// order and shares its writer. The BLE name is matched against the SSID
+// blacklist, the BDA against the MAC blacklist (Blacklist.h). Dedup is done on
+// the node side (log-once forwarding), so no Core-side ring here.
+static void appendBleRow(const String& bda, const String& name, uint8_t addrType,
+                         const String& firstSeen, int channel, int rssi,
+                         double lat, double lon, double altM, double accM,
+                         const String& serviceUuids, uint16_t mfgrId) {
+  if (!sdOk || !logFile) return;
+
+  if (cfgBlacklistedSsid(name.c_str())) return;
+  if (bda.length() >= 17) {
+    uint8_t bl[6];
+    parseBda(bda.c_str(), bl);
+    if (cfgBlacklistedMac(bl)) return;
+  }
+
+  // Rotate CSV before it exceeds the WDGoWars 15 MB upload limit
+  if (csvRowCount >= CSV_MAX_ROWS) {
+    Serial.println("[SD] CSV row limit reached, rotating log file");
+    closeLogFile();
+    if (!openLogFile()) return;
+  }
+
+  // Build through the shared host-tested formatter so on-disk layout matches the
+  // Wi-Fi rows (same 14-column header) and test/test_ble_csv.cpp exactly.
+  std::string row = formatBleRow(bda.c_str(), name.c_str(), addrType,
+                                 firstSeen.c_str(), channel, rssi, lat, lon,
+                                 altM, accM, serviceUuids.c_str(), mfgrId);
+  writeCsvLine(String(row.c_str()));
 }
 
 // Forward declarations needed by WDGoWars and WiGLE batch functions
@@ -1882,6 +1977,7 @@ struct CoreNodeInfo {
   uint32_t lastHbMs;
   uint32_t recordsRx;
   bool     isBiscuit;  // true = Biscuit Node protocol (requires full-size 212-byte packets)
+  uint8_t  role;       // NodeRole (wifi/ble/both) resolved from config at join — OLED glyph
 };
 static bool         meshCoreActive  = false;
 static uint32_t     coreRecordsRx   = 0;
@@ -1901,6 +1997,13 @@ static CorReqSlot         coreReqBuf[CORE_REQ_QUEUE];
 static volatile uint8_t   coreReqHead = 0, coreReqTail = 0;
 static CorTextSlot        coreTextBuf[CORE_TEXT_QUEUE];
 static volatile uint8_t   coreTextHead = 0, coreTextTail = 0;
+
+// BLE observations forwarded by nodes (JCMK type 6). Parsed in the ESP-Now
+// callback, GPS-stamped + logged in the core tick. Sized for a burst across nodes.
+#define CORE_BLE_QUEUE 64
+static BleObservation     coreBleBuf[CORE_BLE_QUEUE];
+static volatile uint8_t   coreBleHead = 0, coreBleTail = 0;
+static uint32_t           coreBleRx = 0;   // total BLE observations logged (mesh page)
 
 // ------------- ESP-Now helpers -----------------------------------
 static void jcmkSetChannel(uint8_t ch) {
@@ -1970,8 +2073,11 @@ static void coreSendReply(const uint8_t* mac) {
 
 // Send Biscuit Node a role assignment (MSG_ROLE_ASSIGN, type=5) then a channel
 // config (MSG_CONFIG_UPDATE, type=10). Both packets must be full size (212 bytes).
-static void coreSendBiscuitRoleAndConfig(const uint8_t* mac, uint8_t startIdx, uint8_t endIdx) {
-  // Step 1: role assignment — text[0] = 1 (ROLE_WIFI)
+static void coreSendBiscuitRoleAndConfig(const uint8_t* mac, uint8_t startIdx, uint8_t endIdx,
+                                         uint8_t role) {
+  // Step 1: role assignment — text[0] = 1 (ROLE_WIFI). This legacy Biscuit
+  // handshake byte stays ROLE_WIFI so a real Biscuit transitions to scanning;
+  // the actual wifi/ble/both role for Piglet nodes rides the channel string below.
   jcmk_text_msg_t roleMsg = {};
   memcpy(roleMsg.magic, JCMK_MAGIC, 4);
   roleMsg.type    = JCMK_MSG_ADMIN;  // = 5 = MSG_ROLE_ASSIGN on Biscuit
@@ -1981,7 +2087,7 @@ static void coreSendBiscuitRoleAndConfig(const uint8_t* mac, uint8_t startIdx, u
   esp_now_send(mac, (uint8_t*)&roleMsg, sizeof(roleMsg));
   delay(10);
 
-  // Step 2: channel config — "channels=1,2,...;dwell=80"
+  // Step 2: channel config — "channels=1,2,...;dwell=80;role=both"
   jcmk_text_msg_t cfgMsg = {};
   memcpy(cfgMsg.magic, JCMK_MAGIC, 4);
   cfgMsg.type    = 10;  // MSG_CONFIG_UPDATE
@@ -1995,6 +2101,12 @@ static void coreSendBiscuitRoleAndConfig(const uint8_t* mac, uint8_t startIdx, u
   }
   chList += ";dwell=";
   chList += String((uint32_t)NODE_SCAN_DWELL_MS);
+  // Piglet extension: carry the scan role so PigletNodes (flagged Biscuit because
+  // they send full-size frames) get their wifi/ble/both assignment over the path
+  // they actually parse. Real Biscuit nodes ignore the extra key. Kept last so
+  // the value is cleanly terminated.
+  chList += ";role=";
+  chList += roleToStr(role);
 
   uint16_t slen = (chList.length() < JCMK_TEXT_MAX)
                 ? (uint16_t)chList.length() : (uint16_t)JCMK_TEXT_MAX;
@@ -2003,10 +2115,11 @@ static void coreSendBiscuitRoleAndConfig(const uint8_t* mac, uint8_t startIdx, u
   cfgMsg.text[slen] = '\0';
   esp_now_send(mac, (uint8_t*)&cfgMsg, sizeof(cfgMsg));
 
-  Serial.printf("[CORE] Biscuit role+config sent (ch %d-%d, dwell %dms)\n",
+  Serial.printf("[CORE] Biscuit role+config sent (ch %d-%d, dwell %dms, role=%s)\n",
     JCMK_CHANNELS[startIdx],
     JCMK_CHANNELS[end],
-    (int)NODE_SCAN_DWELL_MS);
+    (int)NODE_SCAN_DWELL_MS,
+    roleToStr(role));
 }
 
 // ESP-Now receive callback — handles both Node and Core roles
@@ -2073,6 +2186,36 @@ static void jcmkOnRecv(const esp_now_recv_info_t* info,
           coreReqTail = nxt;
         }
       }
+    } else if (type == JCMK_MSG_BLE_OBS && len >= (int)sizeof(jcmk_ble_obs_msg_t)) {
+      // BLE observation forwarded by a node (type 6). Parse into the BLE ring;
+      // logged + GPS-stamped in the core tick. Keyed on type, so legacy peers'
+      // packets never reach here.
+      const jcmk_ble_obs_msg_t* bm = (const jcmk_ble_obs_msg_t*)data;
+      uint8_t next = (coreBleTail + 1) % CORE_BLE_QUEUE;
+      if (next != coreBleHead) {
+        jcmkBleParse(*bm, coreBleBuf[coreBleTail]);
+        coreBleTail = next;
+      }
+      // Touch the node (heartbeat + per-node count), register if unknown — same
+      // pattern as the TEXT path. A type-6 frame is 212 bytes (same as text) but
+      // is only ever sent by a Piglet/PigletNode, so register it as JCMK, not
+      // Biscuit (the size heuristic would otherwise misflag it).
+      bool found = false;
+      for (uint8_t i = 0; i < CORE_MAX_NODES; i++) {
+        if (coreNodes[i].active && memcmp(coreNodes[i].mac, info->src_addr, 6) == 0) {
+          coreNodes[i].lastHbMs = millis();
+          coreNodes[i].recordsRx++;
+          found = true; break;
+        }
+      }
+      if (!found) {
+        uint8_t nxt = (coreReqTail + 1) % CORE_REQ_QUEUE;
+        if (nxt != coreReqHead) {
+          memcpy(coreReqBuf[coreReqTail].mac, info->src_addr, 6);
+          coreReqBuf[coreReqTail].isBiscuit = false;
+          coreReqTail = nxt;
+        }
+      }
     }
   } else {
     if (type == JCMK_MSG_CORE_REPLY && !jcmkHaveCore && !jcmkCoreFoundPending) {
@@ -2101,12 +2244,18 @@ static void coreFindOrAddNode(const uint8_t* mac, bool isBiscuit) {
       coreNodes[i].active = true; coreNodes[i].lastHbMs = millis();
       coreNodes[i].recordsRx = 0; coreNodes[i].isBiscuit = isBiscuit;
       memcpy(coreNodes[i].mac, mac, 6);
+      coreNodes[i].role = cfgRoleForMac(mac);  // wifi/ble/both from /wardriver.cfg
       coreNodeCount++; jcmkAddPeer(mac);
       // Re-send CORE_REPLY now that the peer is registered.
       coreSendReply(mac);
-      Serial.printf("[CORE] New %s node %d: %02X:%02X:%02X:%02X:%02X:%02X\n",
+      Serial.printf("[CORE] New %s node %d: %02X:%02X:%02X:%02X:%02X:%02X role=%s\n",
         isBiscuit ? "Biscuit" : "JCMK",
-        i, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+        i, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
+        roleToStr(coreNodes[i].role));
+      // Ready-to-paste config line so the operator can pin this node's role.
+      Serial.printf("[CORE]   node.%02X%02X%02X%02X%02X%02X=%s\n",
+        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
+        roleToStr(coreNodes[i].role));
       return;
     }
   }
@@ -2128,7 +2277,8 @@ static void coreReassignChannels() {
     if (coreNodes[slot].isBiscuit) {
       coreSendBiscuitRoleAndConfig(coreNodes[slot].mac,
                                    coreNodes[slot].startIdx,
-                                   coreNodes[slot].endIdx);
+                                   coreNodes[slot].endIdx,
+                                   coreNodes[slot].role);
     } else {
       jcmk_admin_msg_t msg; memcpy(msg.magic, JCMK_MAGIC, 4);
       msg.type = JCMK_MSG_ADMIN; msg.node_count = count;
@@ -2151,7 +2301,8 @@ static void coreResendAdminToAll() {
     if (coreNodes[i].isBiscuit) {
       coreSendBiscuitRoleAndConfig(coreNodes[i].mac,
                                    coreNodes[i].startIdx,
-                                   coreNodes[i].endIdx);
+                                   coreNodes[i].endIdx,
+                                   coreNodes[i].role);
     } else {
       jcmk_admin_msg_t msg; memcpy(msg.magic, JCMK_MAGIC, 4);
       msg.type = JCMK_MSG_ADMIN; msg.node_count = coreNodeCount;
@@ -2191,11 +2342,25 @@ static void coreParseAndLogText(const char* line) {
   coreRecordsRx++;
 }
 
+// Log one node-forwarded BLE observation, stamping the Core's own GPS/time
+// (the node's observedAtMs is advisory). Mirrors coreParseAndLogText's GPS block.
+static void coreLogBleObs(const BleObservation& o) {
+  double lat=0, lon=0, altM=0, accM=0;
+  if (gpsHasFix) { lat=gps.location.lat(); lon=gps.location.lng();
+                   altM=gps.altitude.meters(); accM=gps.hdop.hdop(); }
+  digitalWrite(PINS.tft_cs, HIGH);
+  appendBleRow(String(o.addr), String(o.name), o.addrType, iso8601NowUTC(),
+               o.channel, o.rssi, lat, lon, altM, accM,
+               String(o.serviceUuids), o.mfgrId);
+  coreBleRx++;
+  coreRecordsRx++;
+}
+
 static void enterCoreMode() {
   Serial.println("[CORE] Entering Core mode");
-  meshCoreActive=false; coreRecordsRx=0; coreNodeCount=0;
+  meshCoreActive=false; coreRecordsRx=0; coreBleRx=0; coreNodeCount=0;
   coreAssignVer=0; coreHbCounter=0; coreLastHbMs=0;
-  coreReqHead=coreReqTail=0; coreTextHead=coreTextTail=0;
+  coreReqHead=coreReqTail=0; coreTextHead=coreTextTail=0; coreBleHead=coreBleTail=0;
   memset(coreNodes, 0, sizeof(coreNodes));
   // Mesh mode owns the WiFi stack — prevent stopAPIfAllowed() from firing
   // WiFi.disconnect(true,true) after esp_now_init() would kill the ESP-Now driver.
@@ -2245,6 +2410,10 @@ static void coreModeTick() {
   while (coreTextHead!=coreTextTail) {
     uint8_t i=coreTextHead; coreTextHead=(coreTextHead+1)%CORE_TEXT_QUEUE;
     coreParseAndLogText(coreTextBuf[i].line);
+  }
+  while (coreBleHead!=coreBleTail) {
+    uint8_t i=coreBleHead; coreBleHead=(coreBleHead+1)%CORE_BLE_QUEUE;
+    coreLogBleObs(coreBleBuf[i]);
   }
   // Heartbeat + ADMIN refresh — nodes that missed the ADMIN while scanning recover here.
   if (now-coreLastHbMs>=CORE_HB_MS) { coreLastHbMs=now; coreSendHeartbeatToAll(); coreResendAdminToAll(); }
@@ -2489,9 +2658,9 @@ static void drawPageMeshNode() {
       if (coreNodes[i].active) {
         uint8_t* m = coreNodes[i].mac;
         uint8_t si = coreNodes[i].startIdx, ei = coreNodes[i].endIdx;
-        char buf[20];
-        snprintf(buf, sizeof(buf), "%02X%02X%02X %d-%d",
-          m[3], m[4], m[5],
+        char buf[24];
+        snprintf(buf, sizeof(buf), "%02X%02X%02X %c %d-%d",
+          m[3], m[4], m[5], roleGlyph(coreNodes[i].role),
           (si<JCMK_NUM_CHANNELS)?JCMK_CHANNELS[si]:0,
           (ei<JCMK_NUM_CHANNELS)?JCMK_CHANNELS[ei]:0);
         tft.setTextColor(COLOR_GREEN, BLACK); tft.print(buf);
@@ -2511,9 +2680,10 @@ static void drawPageMeshNode() {
       tft.setTextColor(WHITE, BLACK);
     }
 
-    // Records total (y=82)
+    // Records total (y=82) — Wi-Fi+BLE combined, plus BLE-only count
     tft.fillRect(0, 82, W, 10, BLACK); tft.setCursor(2, 83);
-    char tbuf[20]; snprintf(tbuf, sizeof(tbuf), "Rcvd: %lu", (unsigned long)coreRecordsRx);
+    char tbuf[28]; snprintf(tbuf, sizeof(tbuf), "Rcvd:%lu BLE:%lu",
+      (unsigned long)coreRecordsRx, (unsigned long)coreBleRx);
     tft.print(tbuf);
 
     // GPS (y=96)

@@ -1,0 +1,130 @@
+// Pure, host-testable WiGLE-1.6 CSV formatting for BLE observations.
+//
+// Lives in a header (like Scanner_channels.h) so the band/freq mapping and the
+// row layout can be exercised by the host-side doctest harness without pulling
+// in NimBLE, SD, or the Arduino core. The device-side appendBleRow() in
+// SDUtils.cpp builds its line through formatBleRow() so the on-disk format and
+// the tested format can never drift apart.
+//
+// BLE rows share the same 14-column WigleWifi-1.6 header as Wi-Fi rows; only the
+// per-field semantics differ (see piglet_bluetooth_implementation.md §4).
+#pragma once
+
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <string>
+
+// BLE primary advertising channel -> centre frequency in MHz.
+// NimBLE only ever reports 37/38/39; anything else yields 0 (should not happen).
+inline uint32_t bleChannelToFreq(int channel) {
+  switch (channel) {
+    case 37: return 2402;
+    case 38: return 2426;
+    case 39: return 2480;
+    default: return 0;
+  }
+}
+
+// Format 6 raw address bytes (big-endian, i.e. bda[0] is the most-significant
+// octet shown first) into "AA:BB:CC:DD:EE:FF". NimBLE delivers BDA bytes in LE
+// order, so the scanner reverses them before calling this; the JCMK mesh struct
+// stores them already big-endian. Output buffer must hold >= 18 bytes.
+inline void formatBda(const uint8_t bda[6], char out[18]) {
+  std::snprintf(out, 18, "%02X:%02X:%02X:%02X:%02X:%02X",
+                bda[0], bda[1], bda[2], bda[3], bda[4], bda[5]);
+}
+
+// Inverse of formatBda: parse "AA:BB:CC:DD:EE:FF" (big-endian display order)
+// into 6 bytes. Caller must ensure `s` has at least 17 chars; out holds 6.
+inline void parseBda(const char* s, uint8_t out[6]) {
+  for (int i = 0; i < 6; i++)
+    out[i] = (uint8_t)std::strtoul(s + i * 3, nullptr, 16);
+}
+
+// NimBLE NimBLEAddress::getType() code -> WiGLE AuthMode string.
+//   0 = public, 1 = random static, 2 = resolvable private (RPA),
+//   3 = non-resolvable private (NRPA). Bracketed so WiGLE never confuses these
+//   with Wi-Fi auth modes (OPEN/WPA2/...).
+inline const char* bleAddrTypeToString(uint8_t addrType) {
+  switch (addrType) {
+    case 0: return "[LE Public]";
+    case 1: return "[LE Random]";
+    case 2: return "[LE Resolvable]";
+    case 3: return "[LE NonResolvable]";
+    default: return "[LE Unknown]";
+  }
+}
+
+// RFC4180-escape a field's interior: double every embedded quote. The caller
+// wraps the result in quotes. Matches the Wi-Fi writer's SSID handling.
+inline std::string bleCsvEscapeQuotes(const std::string& in) {
+  std::string out;
+  out.reserve(in.size());
+  for (char c : in) {
+    if (c == '"') out += "\"\"";
+    else          out += c;
+  }
+  return out;
+}
+
+// Normalize a NimBLE service-UUID string to a 4-hex-digit UPPERCASE 16-bit UUID
+// for the RCOIs column. NimBLE's NimBLEUUID::toString() can yield "0xfe9f",
+// "0x180f", a bare "57b4", or the canonical 128-bit base alias
+// "0000fe9f-0000-1000-8000-00805f9b34fb". Writes e.g. "FE9F" to out (size >= 5)
+// and returns true; returns false (caller skips) for genuine 128-bit UUIDs,
+// which are not 16-bit RCOIs.
+inline bool normalizeBleUuid16(const std::string& in, char out[5]) {
+  uint32_t v;
+  if (in.size() == 36 && in[8] == '-') {
+    // 128-bit canonical: only the Bluetooth base alias carries a 16-bit value.
+    if (in.compare(0, 4, "0000") == 0 &&
+        in.compare(8, 28, "-0000-1000-8000-00805f9b34fb") == 0)
+      v = (uint32_t)std::strtoul(in.substr(4, 4).c_str(), nullptr, 16);
+    else
+      return false;  // real 128-bit custom UUID — not a 16-bit RCOI
+  } else {
+    const char* p = in.c_str();
+    if (in.rfind("0x", 0) == 0 || in.rfind("0X", 0) == 0) p += 2;  // strip prefix
+    char* end = nullptr;
+    unsigned long parsed = std::strtoul(p, &end, 16);
+    if (end == p || parsed > 0xFFFF) return false;
+    v = (uint32_t)parsed;
+  }
+  std::snprintf(out, 5, "%04X", (unsigned)v);
+  return true;
+}
+
+// Build one WigleWifi-1.6 CSV row for a BLE observation. Column order matches
+// the header emitted in SDUtils.cpp::openLogFile():
+//   MAC,SSID,AuthMode,FirstSeen,Channel,Frequency,RSSI,
+//   CurrentLatitude,CurrentLongitude,AltitudeMeters,AccuracyMeters,
+//   RCOIs,MfgrId,Type
+//
+//  - name is quote-wrapped and escaped (empty -> "").
+//  - addrType is mapped to the bracketed [LE ...] AuthMode string.
+//  - serviceUuids is emitted verbatim into RCOIs (already ';'-joined, may be "").
+//  - mfgrId is the decimal LE-decoded company identifier (0 if none).
+//  - Type is always BLE.
+inline std::string formatBleRow(const std::string& bda,
+                                const std::string& name,
+                                uint8_t addrType,
+                                const std::string& firstSeen,
+                                int channel,
+                                int rssi,
+                                double lat,
+                                double lon,
+                                double altM,
+                                double accM,
+                                const std::string& serviceUuids,
+                                uint16_t mfgrId) {
+  std::string escapedName = bleCsvEscapeQuotes(name);
+  char buf[384];
+  std::snprintf(buf, sizeof(buf),
+                "%s,\"%s\",%s,%s,%d,%u,%d,%.6f,%.6f,%.1f,%.1f,%s,%u,BLE",
+                bda.c_str(), escapedName.c_str(), bleAddrTypeToString(addrType),
+                firstSeen.c_str(), channel, (unsigned)bleChannelToFreq(channel),
+                rssi, lat, lon, altM, accM, serviceUuids.c_str(),
+                (unsigned)mfgrId);
+  return std::string(buf);
+}
