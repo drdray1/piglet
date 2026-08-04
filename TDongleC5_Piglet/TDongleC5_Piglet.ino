@@ -52,6 +52,7 @@
 #include "JcmkBle.h"      // jcmk_ble_obs_msg_t (type 6 wire frame), jcmkBleParse
 #include "NodeRole.h"     // per-node scan roles (wifi/ble/both)
 #include "Blacklist.h"    // save-file blacklist (MAC / SSID-BLE-name)
+#include "GpsFix.h"       // GpsFix POD returned by captureGpsFix()
 
 // Firmware version
 #define FIRMWARE_VERSION "v2.58"
@@ -153,6 +154,11 @@ struct Config {
   String meshModeOnBoot = "none";
   // Rotate TFT screen 180° (true = upside-down mount). Requires reboot.
   bool rotateScreen180 = false;
+  // When true: after boot uploads complete, disconnect from home WiFi and
+  // begin wardriving immediately instead of staying on the STA connection.
+  // The web UI is still reachable if you connect to the Wardriver AP later,
+  // but the device will not hold the STA link open. Requires reboot.
+  bool autoStartAfterUpload = false;
 
   // ---- Per-node scan roles (Core assigns each node a task by MAC) ----
   // Role for any node NOT listed in nodeRoles[]. (wifi | ble | both)
@@ -174,6 +180,37 @@ static const char* bootSlogan = nullptr;
 static bool sdOk = false;
 static bool scanningEnabled = true;
 static bool gpsHasFix = false;
+
+// Last-known GPS position — used when fix is temporarily lost so networks
+// aren't logged at 0,0 (null island).
+// Updated every loop() iteration (not just on scan) so position stays current
+// even when driving through areas with no networks.
+// Quality-gated: requires HDOP ≤ 10 and ≥ 3 satellites to prevent a brief
+// low-quality re-acquisition from overwriting a good cached position.
+// Declared here (rather than beside the scanner) so the Core's mesh/BLE log
+// paths further up the file can reach captureGpsFix() too.
+static bool     lastGpsValid   = false;
+static double   lastLat = 0, lastLon = 0, lastAlt = 0, lastAcc = 0;
+static uint32_t lastGpsValidMs = 0;          // millis() when position was last cached
+static const uint32_t GPS_CACHE_MAX_MS = 180000UL;  // discard cache after 3 min
+
+// One-shot GPS snapshot for CSV row stamping. Falls back to the last-known-good
+// position while the fix is out, so Wi-Fi, BLE and mesh-forwarded rows are all
+// stamped the same way. Zeros only when there is no fix and no usable cache.
+// (struct GpsFix lives in GpsFix.h — see the note there on auto-prototypes.)
+static GpsFix captureGpsFix() {
+  GpsFix g{0, 0, 0, 0};
+  if (gpsHasFix) {
+    g.lat  = gps.location.lat();
+    g.lon  = gps.location.lng();
+    g.altM = gps.altitude.isValid() ? gps.altitude.meters() : 0.0;
+    g.accM = gps.hdop.isValid()     ? gps.hdop.hdop()       : 0.0;
+    // lastLat/lastLon is maintained by loop() — no update here.
+  } else if (lastGpsValid && (millis() - lastGpsValidMs) <= GPS_CACHE_MAX_MS) {
+    g.lat = lastLat; g.lon = lastLon; g.altM = lastAlt; g.accM = lastAcc;
+  }
+  return g;
+}
 
 // UI state
 static int   uiGpsSats    = 0;
@@ -405,6 +442,7 @@ static void cfgAssignKV(const String& k, const String& v) {
   else if (k == "deviceName")      cfg.deviceName = v;
   else if (k == "meshModeOnBoot") { String vv = v; vv.toLowerCase(); if (vv == "core" || vv == "node" || vv == "none") cfg.meshModeOnBoot = vv; }
   else if (k == "rotateScreen180") { String vv = v; vv.toLowerCase(); cfg.rotateScreen180 = (vv == "true" || vv == "1"); }
+  else if (k == "autoStartAfterUpload") { String vv = v; vv.toLowerCase(); cfg.autoStartAfterUpload = (vv == "true" || vv == "1"); }
   else if (k == "nodeDefaultRole") { uint8_t r; if (roleFromStr(v.c_str(), r)) cfg.nodeDefaultRole = r; }
   else if (k.startsWith("node.")) {
     // node.<12hex>=wifi|ble|both — per-node scan role addressed by full MAC.
@@ -448,6 +486,10 @@ static bool saveConfigToSD() {
   f.print("meshModeOnBoot=");  f.println(cfg.meshModeOnBoot);
   f.println("# Rotate screen 180 degrees (true = upside-down mount). Requires reboot.");
   f.print("rotateScreen180="); f.println(cfg.rotateScreen180 ? "true" : "false");
+  f.println("# Disconnect from home WiFi after boot uploads and start wardriving immediately.");
+  f.println("# true = wardrive right after uploads complete (headless mode).");
+  f.println("# false = stay on home WiFi, keep web UI accessible (default).");
+  f.print("autoStartAfterUpload="); f.println(cfg.autoStartAfterUpload ? "true" : "false");
 
   f.flush(); f.close();
   Serial.println("[CFG] Saved OK");
@@ -2334,23 +2376,19 @@ static void coreParseAndLogText(const char* line) {
   String bssid=s.substring(0,p0), ssid=s.substring(p0+1,p1);
   String auth=s.substring(p1+1,p2);
   int ch=s.substring(p2+1,p3).toInt(), rssi=s.substring(p3+1).toInt();
-  double lat=0, lon=0, altM=0, accM=0;
-  if (gpsHasFix) { lat=gps.location.lat(); lon=gps.location.lng();
-                   altM=gps.altitude.meters(); accM=gps.hdop.hdop(); }
+  GpsFix g = captureGpsFix();
   digitalWrite(PINS.tft_cs, HIGH);
-  appendWigleRow(bssid, ssid, auth, iso8601NowUTC(), ch, rssi, lat, lon, altM, accM);
+  appendWigleRow(bssid, ssid, auth, iso8601NowUTC(), ch, rssi, g.lat, g.lon, g.altM, g.accM);
   coreRecordsRx++;
 }
 
 // Log one node-forwarded BLE observation, stamping the Core's own GPS/time
 // (the node's observedAtMs is advisory). Mirrors coreParseAndLogText's GPS block.
 static void coreLogBleObs(const BleObservation& o) {
-  double lat=0, lon=0, altM=0, accM=0;
-  if (gpsHasFix) { lat=gps.location.lat(); lon=gps.location.lng();
-                   altM=gps.altitude.meters(); accM=gps.hdop.hdop(); }
+  GpsFix g = captureGpsFix();
   digitalWrite(PINS.tft_cs, HIGH);
   appendBleRow(String(o.addr), String(o.name), o.addrType, iso8601NowUTC(),
-               o.channel, o.rssi, lat, lon, altM, accM,
+               o.channel, o.rssi, g.lat, g.lon, g.altM, g.accM,
                String(o.serviceUuids), o.mfgrId);
   coreBleRx++;
   coreRecordsRx++;
@@ -2853,6 +2891,7 @@ static void handleStatus() {
   c["deviceName"]     = cfg.deviceName;
   c["meshModeOnBoot"] = cfg.meshModeOnBoot;
   c["rotateScreen180"] = cfg.rotateScreen180;
+  c["autoStartAfterUpload"] = cfg.autoStartAfterUpload;
 
   String out; serializeJson(doc, out);
   server.send(200, "application/json", out);
@@ -3322,35 +3361,13 @@ static bool shouldPauseScanning() {
   return false;
 }
 
-// Last-known GPS position — used when fix is temporarily lost so networks
-// aren't logged at 0,0 (null island).
-// Updated every loop() iteration (not just on scan) so position stays current
-// even when driving through areas with no networks.
-// Quality-gated: requires HDOP ≤ 10 and ≥ 3 satellites to prevent a brief
-// low-quality re-acquisition from overwriting a good cached position.
-static bool     lastGpsValid   = false;
-static double   lastLat = 0, lastLon = 0, lastAlt = 0, lastAcc = 0;
-static uint32_t lastGpsValidMs = 0;          // millis() when position was last cached
-static const uint32_t GPS_CACHE_MAX_MS = 180000UL;  // discard cache after 3 min
-
 // ---------------- Scan (2.4 + 5 GHz) ----------------
 static void processScanResults(int n) {
   if (n <= 0) { WiFi.scanDelete(); return; }
 
   String firstSeen = iso8601NowUTC();
-  double lat = 0, lon = 0, altM = 0, accM = 0;
-  if (gpsHasFix) {
-    lat  = gps.location.lat();
-    lon  = gps.location.lng();
-    altM = gps.altitude.isValid() ? gps.altitude.meters() : 0.0;
-    accM = gps.hdop.isValid()     ? gps.hdop.hdop()       : 0.0;
-    // lastLat/lastLon is maintained by loop() — no update here.
-  } else if (lastGpsValid && (millis() - lastGpsValidMs) <= GPS_CACHE_MAX_MS) {
-    lat  = lastLat;
-    lon  = lastLon;
-    altM = lastAlt;
-    accM = lastAcc;
-  }
+  GpsFix g = captureGpsFix();
+  double lat = g.lat, lon = g.lon, altM = g.altM, accM = g.accM;
 
   uint32_t wrote = 0;
   for (int i = 0; i < n; i++) {
@@ -3709,6 +3726,30 @@ void setup() {
       Serial.println("[UPLOAD] Skipped (STA/SD not ready).");
     } else if (cfg.maxBootUploads == 0) {
       Serial.println("[UPLOAD] Disabled (maxBootUploads=0).");
+    }
+  }
+
+  // Auto-start wardriving: if enabled, drop the STA link after uploads so
+  // scanning begins immediately. shouldPauseScanning() returns true while
+  // WL_CONNECTED, so without this the device waits for STA to time out.
+  // Skipped when meshModeOnBoot is set (mesh mode tears STA down itself below).
+  // Safe with respect to the AP: startAP() only runs when STA failed, and this
+  // branch requires staOk, so there is no AP window to knock over here.
+  {
+    String mm = cfg.meshModeOnBoot; mm.toLowerCase();
+    bool meshBoot = (mm == "core" || mm == "node");
+    if (cfg.autoStartAfterUpload && staOk && !meshBoot) {
+      Serial.println("[BOOT] autoStartAfterUpload: disconnecting STA — wardriving begins now");
+      WiFi.setAutoReconnect(false);
+      WiFi.persistent(false);
+      WiFi.disconnect(true, false);  // eraseap=false keeps NVS credentials
+      delay(100);
+      WiFi.mode(WIFI_STA);           // idle STA ready for scanning
+      scanningEnabled = true;
+      // lastStaStatus was latched as WL_CONNECTED above; resync it so
+      // handleStaTransitions() doesn't re-run this same teardown on the
+      // first loop() and log a misleading "STA disconnected" line.
+      lastStaStatus = WiFi.status();
     }
   }
 

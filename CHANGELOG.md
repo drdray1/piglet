@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### T-Dongle C5 parity with upstream v2.57–v2.58
+
+- **`autoStartAfterUpload` added to the T-Dongle firmware** — the option shipped
+  upstream in v2.57 for the XIAO sketch only. Same semantics: once boot uploads
+  finish, the STA link is dropped and wardriving starts immediately instead of
+  waiting for the connection to time out. Skipped when `meshModeOnBoot` is set
+  (mesh tears STA down itself). Settable via `/wardriver.cfg` or `POST /saveConfig`,
+  and reported in `status.json`; the T-Dongle web page has no config form, so
+  there is no dropdown to add. Defaults to `false` — no behaviour change unless enabled.
+- **GPS last-known-position cache now covers every log path.** Upstream's v2.58
+  cache was applied only to the Wi-Fi scan path, so Core-logged rows —
+  `coreParseAndLogText()` (mesh-forwarded Wi-Fi) and `coreLogBleObs()`
+  (mesh-forwarded BLE) — still wrote 0,0 whenever the fix dropped. All three now
+  route through a shared `captureGpsFix()`, matching the XIAO firmware. Also
+  picks up upstream's `isValid()` guards on altitude/HDOP.
+- `GpsFix` moved into `TDongleC5_Piglet/GpsFix.h`: declaring it in the `.ino`
+  body breaks the Arduino auto-prototype pass ("'GpsFix' does not name a type").
+
+All three sketches verified to compile against ESP32 core 3.3.10
+(PigletNode needs a `huge_app` partition scheme; it overflows the default).
+
 ### BLE wardriving (opt-in via `bleEnabled`)
 
 Passive Bluetooth LE wardriving alongside Wi-Fi, solo and across a mesh cluster.
