@@ -1,5 +1,6 @@
 #include "GPS.h"
 #include "Globals.h"
+#include "Scanner.h"   // last-known-good GPS cache (lastLat/lastGpsValid/...)
 #include <math.h>
 #include <time.h>
 #include <sys/time.h>
@@ -9,8 +10,13 @@ GpsFix captureGpsFix() {
   if (gpsHasFix) {
     g.lat  = gps.location.lat();
     g.lon  = gps.location.lng();
-    g.altM = gps.altitude.meters();
-    g.accM = gps.hdop.hdop();
+    g.altM = gps.altitude.isValid() ? gps.altitude.meters() : 0.0;
+    g.accM = gps.hdop.isValid()     ? gps.hdop.hdop()       : 0.0;
+    // lastLat/lastLon is maintained by loop() — no update here.
+  } else if (lastGpsValid && (millis() - lastGpsValidMs) <= GPS_CACHE_MAX_MS) {
+    // Use last-known position (quality-gated, 3-min expiry) until fix returns,
+    // so rows aren't stamped at 0,0 (null island).
+    g.lat = lastLat; g.lon = lastLon; g.altM = lastAlt; g.accM = lastAcc;
   }
   return g;
 }

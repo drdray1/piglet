@@ -20,6 +20,8 @@
 #include <esp_now.h>
 #include "esp_wifi.h"
 
+#define FIRMWARE_VERSION "v2.58"
+
 // ---- BLE wardriving (always on) ----
 // These four headers are byte-identical copies of ../Arduino Files/Piglet/.
 // Arduino can't share files across sketch folders, so they're duplicated here.

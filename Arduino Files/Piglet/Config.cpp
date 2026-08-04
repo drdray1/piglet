@@ -21,6 +21,7 @@ const PinMap& detectPinsByChip() {
 
   if (m.indexOf("C5") >= 0) return PINS_C5;
   if (m.indexOf("C6") >= 0) return PINS_C6;
+  if (m.indexOf("C3") >= 0) return PINS_XIAO_C3;
   if (m.indexOf("S3") >= 0) return PINS_S3;
 
   // fallback
@@ -29,10 +30,11 @@ const PinMap& detectPinsByChip() {
 
 PinMap pickPinsFromConfig() {
   // cfg.board is expected to be: "auto" | "s3" | "c6" (lowercase)
-  if (cfg.board == "s3") return PINS_S3;
+  if (cfg.board == "s3")  return PINS_S3;
   if (cfg.board == "exp") return PINS_S3_EXP_BASE;
-  if (cfg.board == "c6") return PINS_C6;
-  if (cfg.board == "c5") return PINS_C5;
+  if (cfg.board == "c6")  return PINS_C6;
+  if (cfg.board == "c5")  return PINS_C5;
+  if (cfg.board == "c3")  return PINS_XIAO_C3;
   return detectPinsByChip(); // "auto" or anything else
 }
 
@@ -126,7 +128,7 @@ void cfgAssignKV(const String& k, const String& v) {
   }
   else if (k == "board") {
     String vv = v; vv.toLowerCase();
-    if (vv == "auto" || vv == "s3" || vv == "exp" || vv == "c5" || vv == "c6") cfg.board = vv;
+    if (vv == "auto" || vv == "s3" || vv == "exp" || vv == "c5" || vv == "c6" || vv == "c3") cfg.board = vv;
   }
   else if (k == "speedUnits") {
     String vv = v; vv.toLowerCase();
@@ -153,6 +155,10 @@ void cfgAssignKV(const String& k, const String& v) {
   else if (k == "rotateScreen180") {
     String vv = v; vv.toLowerCase();
     cfg.rotateScreen180 = (vv == "true" || vv == "1");
+  }
+  else if (k == "autoStartAfterUpload") {
+    String vv = v; vv.toLowerCase();
+    cfg.autoStartAfterUpload = (vv == "true" || vv == "1");
   }
   else if (k == "bleEnabled") {
     String vv = v; vv.toLowerCase();
@@ -331,6 +337,12 @@ bool saveConfigToSD() {
   f.println("");
   f.println("# Rotate screen 180 degrees (true = upside-down mount). Requires reboot.");
   f.print("rotateScreen180="); f.println(cfg.rotateScreen180 ? "true" : "false");
+
+  f.println("");
+  f.println("# Disconnect from home WiFi after boot uploads and start wardriving immediately.");
+  f.println("# true = wardrive right after uploads complete (headless mode).");
+  f.println("# false = stay on home WiFi, keep web UI accessible (default).");
+  f.print("autoStartAfterUpload="); f.println(cfg.autoStartAfterUpload ? "true" : "false");
 
   f.println("");
   f.println("# ---- BLE Wardriving (optional) ----");

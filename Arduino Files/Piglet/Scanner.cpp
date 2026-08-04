@@ -19,11 +19,24 @@ const char* authModeToString(wifi_auth_mode_t m) {
   }
 }
 
+// Last-known GPS position — used when fix is temporarily lost so networks
+// aren't logged at 0,0 (null island).
+// Updated every loop() iteration (not just on scan) so position stays current
+// even when driving through areas with no networks.
+// Quality-gated: requires HDOP ≤ 10 and ≥ 3 satellites to prevent a brief
+// low-quality re-acquisition from overwriting a good cached position.
+bool     lastGpsValid   = false;
+double   lastLat = 0, lastLon = 0, lastAlt = 0, lastAcc = 0;
+uint32_t lastGpsValidMs = 0;          // millis() when position was last cached
+const uint32_t GPS_CACHE_MAX_MS = 180000UL;  // discard cache after 3 min
+
 // ---- Result processor (shared between sync and async paths) ----
 static void processScanResults(int n) {
   if (n <= 0) { WiFi.scanDelete(); return; }
 
   String firstSeen = iso8601NowUTC();
+  // captureGpsFix() applies the last-known-position cache below, so BLE and
+  // mesh-forwarded rows get the same treatment as Wi-Fi ones.
   GpsFix g = captureGpsFix();
 
   uint32_t wrote = 0;

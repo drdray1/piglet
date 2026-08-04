@@ -12,7 +12,7 @@ struct Config {
   String wardriverPsk  = "wardrive1234";
   uint32_t gpsBaud     = 9600;
   String scanMode      = "aggressive"; // aggressive | powersaving
-  String board = "auto"; // auto | s3 | c5 | c6 | exp  (pins selected at boot; reboot required after change)
+  String board = "auto"; // auto | s3 | c5 | c6 | c3 | exp  (pins selected at boot; reboot required after change)
   String speedUnits  = "kmh"; // kmh | mph
   int battPin        = -1;    // GPIO for battery voltage ADC (-1 = disabled). Expects 1:2 voltage divider from LiPo.
   bool batteryTest   = false; // Enable battery test (logs elapsed time to /battery_test.csv)
@@ -44,6 +44,12 @@ struct Config {
   // Rotate the OLED display 180° (true = upside-down mount, false = normal).
   // Requires reboot to take effect.
   bool rotateScreen180 = false;
+
+  // When true: after boot uploads complete, disconnect from home WiFi and
+  // begin wardriving immediately instead of staying on the STA connection.
+  // The web UI is still reachable if you connect to the Wardriver AP later,
+  // but the device will not hold the STA link open. Requires reboot.
+  bool autoStartAfterUpload = false;
 
   // ---- BLE wardriving (see piglet_bluetooth_implementation.md) ----
   // Master enable. When false the NimBLE stack is never initialised, so there

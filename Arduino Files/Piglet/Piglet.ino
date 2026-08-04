@@ -329,10 +329,11 @@ void setup() {
   // =========================
   // Phase 3: Init Button + OLED + GPS using FINAL pins
   // =========================
-  pinMode(pins.btn, INPUT_PULLUP);
-  Serial.print("[BTN] Init OK (GPIO ");
-  Serial.print(pins.btn);
-  Serial.println(", INPUT_PULLUP)");
+  if (pins.btn >= 0) pinMode(pins.btn, INPUT_PULLUP);
+  Serial.print("[BTN] Init");
+  if (pins.btn >= 0) { Serial.print(" OK (GPIO "); Serial.print(pins.btn); Serial.print(", INPUT_PULLUP)"); }
+  else Serial.print(" skipped (btn=-1, no button on this board)");
+  Serial.println();
 
   // I2C OLED (final pins)
   Serial.println("[LCD] Initializing I2C + SSD1306 (final pins)...");
@@ -371,8 +372,39 @@ void setup() {
   Serial.print(" Baud=");
   Serial.println(cfg.gpsBaud);
 
+  GPSSerial.setRxBufferSize(512);  // 512 bytes ≈ 530 ms at 9600 baud; avoids overflow during WiFi scans
   GPSSerial.begin(cfg.gpsBaud, SERIAL_8N1, pins.gps_rx, pins.gps_tx);
   Serial.println("[GPS] UART started");
+
+  // GPS connection check — wait up to 2 s for any bytes from the module.
+  // Diagnosis key:
+  //   chars=0            -> RX not connected (check GPS TX wire)
+  //   chars>0, failed>0  -> baud rate mismatch or signal noise
+  //   chars>0, failed=0  -> UART wired correctly; fix comes once outside with signal
+  {
+    Serial.println("[GPS] Checking wiring...");
+    uint32_t gpsCheckEnd = millis() + 2000;
+    while (millis() < gpsCheckEnd) {
+      while (GPSSerial.available()) gps.encode(GPSSerial.read());
+      delay(10);
+    }
+    uint32_t chars     = gps.charsProcessed();
+    uint32_t sentences = gps.passedChecksum();
+    uint32_t failed    = gps.failedChecksum();
+    if (chars == 0) {
+      Serial.printf("[GPS] WARNING: No data on RX=GPIO%d\n"
+                    "[GPS]   -> Check GPS TX wire is on GPIO%d\n"
+                    "[GPS]   -> Check GPS module is powered (3.3V on QWIIC)\n",
+                    pins.gps_rx, pins.gps_rx);
+    } else if (failed > sentences) {
+      Serial.printf("[GPS] Data on RX but high checksum errors (chars=%lu ok=%lu fail=%lu)\n"
+                    "[GPS]   -> Likely wrong baud rate (currently %lu) or signal noise\n",
+                    chars, sentences, failed, (unsigned long)cfg.gpsBaud);
+    } else {
+      Serial.printf("[GPS] UART OK — chars=%lu sentences=%lu failed=%lu\n",
+                    chars, sentences, failed);
+    }
+  }
 
   // WiFi setup: mesh boot with a home network connects STA first for auto-upload,
   // then hands off to mesh. Mesh boot with no home network skips STA/AP entirely.
@@ -443,9 +475,28 @@ void setup() {
     }
   }
 
+  // Auto-start wardriving: if enabled, drop the STA link after uploads so
+  // scanning begins immediately. shouldPauseScanning() returns true while
+  // WL_CONNECTED, so without this the device waits for STA to time out.
+  // Skipped when meshModeOnBoot is set (mesh mode handles its own teardown).
+  {
+    String mm = cfg.meshModeOnBoot; mm.toLowerCase();
+    bool meshBoot = (mm == "core" || mm == "node");
+    if (cfg.autoStartAfterUpload && staOk && !meshBoot) {
+      Serial.println("[BOOT] autoStartAfterUpload: disconnecting STA — wardriving begins now");
+      WiFi.setAutoReconnect(false);
+      WiFi.persistent(false);
+      WiFi.disconnect(true, false);  // eraseap=false keeps NVS credentials
+      delay(100);
+      WiFi.mode(WIFI_STA);           // idle STA ready for scanning
+      staOk = false;                 // suppress STA IP print below
+      scanningEnabled = true;
+    }
+  }
+
   // Now start web server after WiGLE operations are complete
   startWebServer();
-  
+
   if (staOk) {
     Serial.print("[WEB] STA IP: ");
     Serial.println(WiFi.localIP());
@@ -550,6 +601,43 @@ void loop() {
       Serial.print(gps.location.lat(), 6);
       Serial.print(" Lon=");
       Serial.println(gps.location.lng(), 6);
+    }
+  }
+
+  // Update last-known-good position every loop — decoupled from scan results
+  // so it stays current even when no networks are found.
+  // Quality gate: HDOP ≤ 10 and ≥ 3 satellites guards against brief bad fixes
+  // (e.g. re-acquisition after a tunnel) overwriting a good cached position.
+  if (gpsHasFix) {
+    float hdop = gps.hdop.isValid()       ? gps.hdop.hdop()           : 99.0f;
+    int   sats = gps.satellites.isValid() ? (int)gps.satellites.value() : 0;
+    if (hdop <= 10.0f && sats >= 3) {
+      lastLat        = gps.location.lat();
+      lastLon        = gps.location.lng();
+      lastAlt        = gps.altitude.isValid() ? gps.altitude.meters() : 0.0;
+      lastAcc        = hdop;
+      lastGpsValid   = true;
+      lastGpsValidMs = millis();
+    }
+  }
+
+  // GPS health log every 10 s until fix acquired
+  if (!gpsHasFix) {
+    static uint32_t lastGpsDiagMs = 0;
+    if (millis() - lastGpsDiagMs >= 10000) {
+      lastGpsDiagMs = millis();
+      uint32_t chars  = gps.charsProcessed();
+      uint32_t ok     = gps.passedChecksum();
+      uint32_t failed = gps.failedChecksum();
+      int      sats   = gps.satellites.isValid() ? (int)gps.satellites.value() : 0;
+      Serial.printf("[GPS] chars=%lu ok=%lu fail=%lu sats=%d fix=NO\n",
+                    chars, ok, failed, sats);
+      if (chars == 0)
+        Serial.printf("[GPS]   No data — RX=GPIO%d not receiving. Check GPS TX wire.\n",
+                      pins.gps_rx);
+      else if (failed > ok)
+        Serial.printf("[GPS]   Checksum errors dominate — check baud rate (%lu bps)\n",
+                      (unsigned long)cfg.gpsBaud);
     }
   }
 
