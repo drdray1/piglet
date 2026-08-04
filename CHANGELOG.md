@@ -34,6 +34,26 @@ BLE. It now scans locally, opt-in via `bleEnabled` exactly like the XIAO.
   the layout is untouched otherwise) and a forwarded-BLE tally on the mesh node
   page. `status.json` gains `foundBle` and `bleEnabled`.
 
+**Node-side role delivery fixed.** A Piglet Core classifies nodes by the size of
+their `CORE_REQUEST`; this sketch sends a full-size 212-byte request, so every
+Piglet Core treats a T-Dongle node as a *Biscuit* node and drives it with a
+type-5 **text** role frame plus a type-10 `MSG_CONFIG_UPDATE`, not the binary
+admin frame. The dongle handled neither correctly:
+
+- The type-5 text frame is 212 bytes, which passed the admin-frame length guard.
+  Its `text[0]` lands exactly on the admin struct's `role` byte and is `1` —
+  `NODE_ROLE_WIFI` — so the node would have pinned itself to Wi-Fi-only and
+  taken garbage channel indices from the counter/len bytes. The guard is now
+  bounded above by `sizeof(jcmk_admin_msg_t)`, so only genuine 10/11-byte admin
+  frames are parsed.
+- Type 10 was not handled at all, so a T-Dongle node never received a channel
+  range or a role from a Piglet Core. It now parses
+  `channels=…;dwell=…;role=…` the same way PigletNode does.
+
+Together these are what make the role gating above actually reachable; without
+them a T-Dongle node would have sat at the default `both`, or worse, silently
+disabled its own BLE.
+
 **Protocol fix found while wiring roles:** the T-Dongle's `jcmk_admin_msg_t` was
 the legacy 10-byte struct with no trailing `role` byte, so as a Core it never
 told nodes their role, and as a node it never learned its own. It is now the

@@ -2507,9 +2507,18 @@ static void jcmkOnRecv(const esp_now_recv_info_t* info,
     if (type == JCMK_MSG_CORE_REPLY && !jcmkHaveCore && !jcmkCoreFoundPending) {
       memcpy(jcmkCoreMacPending, info->src_addr, 6);
       jcmkCoreFoundPending = true;
-    } else if (type == JCMK_MSG_ADMIN && len >= JCMK_ADMIN_LEGACY_LEN) {
+    } else if (type == JCMK_MSG_ADMIN && len >= JCMK_ADMIN_LEGACY_LEN &&
+               len <= (int)sizeof(jcmk_admin_msg_t)) {
       // Base guard is the legacy (pre-role) struct size so a 10-byte admin from
       // an old/3rd-party Core still assigns channels. Read role only if present.
+      //
+      // The UPPER bound matters: Biscuit-style Cores also send type 5 as a
+      // full-size (212-byte) jcmk_text_msg_t role frame whose text[0] lands
+      // exactly on this struct's `role` byte — and text[0] is 1, which is
+      // NODE_ROLE_WIFI. Without the bound that frame is misread as an admin
+      // frame, silently pinning the node to Wi-Fi-only and assigning garbage
+      // channels from the counter/len bytes. The real channel + role for that
+      // flavour of Core arrive in the type-10 handler below.
       const jcmk_admin_msg_t* adm = (const jcmk_admin_msg_t*)data;
       if (adm->assignment_version != jcmkAssignVer) {
         jcmkAssignVer = adm->assignment_version;
@@ -2518,6 +2527,55 @@ static void jcmkOnRecv(const esp_now_recv_info_t* info,
       }
       if (len >= (int)sizeof(jcmk_admin_msg_t))
         jcmkRole = adm->role;   // applied unconditionally (idempotent)
+    } else if (type == 10 && len >= 11) {
+      // ---- Biscuit MSG_CONFIG_UPDATE (type 10) ----
+      // A Piglet Core sizes nodes by their CORE_REQUEST: this sketch sends a
+      // full-size (212-byte) request, so every Piglet Core classifies it as a
+      // Biscuit node and drives it down this path instead of the binary admin
+      // frame above. Without this handler the dongle got no channel range and
+      // no role. Payload: jcmk_text_msg_t, text = "channels=1,2,..;dwell=N;role=X".
+      // Mirrors the type-10 handler in PigletNode.ino.
+      const jcmk_text_msg_t* tm = (const jcmk_text_msg_t*)data;
+      uint16_t slen = (tm->len < JCMK_TEXT_MAX) ? tm->len : JCMK_TEXT_MAX;
+      char buf[JCMK_TEXT_MAX + 1];
+      memcpy(buf, tm->text, slen);
+      buf[slen] = '\0';
+
+      const char* chStart = strstr(buf, "channels=");
+      if (chStart) {
+        chStart += 9;
+        uint8_t first = 0xFF, last = 0xFF;
+        const char* p = chStart;
+        while (*p && *p != ';') {
+          int ch = atoi(p);
+          for (uint8_t i = 0; i < JCMK_NUM_CHANNELS; i++) {
+            if (JCMK_CHANNELS[i] == (uint8_t)ch) {
+              if (first == 0xFF) first = i;
+              last = i;
+              break;
+            }
+          }
+          while (*p && *p != ',' && *p != ';') p++;
+          if (*p == ',') p++;
+        }
+        if (first != 0xFF) {
+          jcmkStartIdx  = first;
+          jcmkEndIdx    = last;
+          jcmkAssignVer = (jcmkAssignVer == 255) ? 1 : jcmkAssignVer + 1;  // mark assigned
+          Serial.printf("[MESH] Biscuit config: ch %d-%d (idx %d-%d)\n",
+            JCMK_CHANNELS[jcmkStartIdx], JCMK_CHANNELS[jcmkEndIdx], jcmkStartIdx, jcmkEndIdx);
+        }
+      }
+      // Piglet extension: the Core appends ";role=wifi|ble|both" so a node it
+      // flagged as Biscuit still gets its scan-role. roleFromStr stops at ';'.
+      const char* rStart = strstr(buf, "role=");
+      if (rStart) {
+        uint8_t r;
+        if (roleFromStr(rStart + 5, r)) {
+          if (r != jcmkRole) Serial.printf("[MESH] role -> %s\n", roleToStr(r));
+          jcmkRole = r;
+        }
+      }
     }
   }
 }
