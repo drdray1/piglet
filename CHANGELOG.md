@@ -2,6 +2,46 @@
 
 ## Unreleased
 
+### BLE wardriving on the T-Dongle C5
+
+The T-Dongle previously logged only the BLE observations its mesh nodes
+forwarded — it had no scanner of its own, so a standalone dongle collected zero
+BLE. It now scans locally, opt-in via `bleEnabled` exactly like the XIAO.
+
+- **Passive observer** implemented inline in the sketch (single-file, so it
+  can't use `BleScanner.cpp`), mirroring the XIAO's `BleScanner` and
+  PigletNode's inline scanner: NimBLE 2.x, observer-only, `setActiveScan(false)`
+  so it never transmits, 100 ms interval / 60 ms window, coex biased to BLE for
+  the duration of a window and back to balanced after.
+- **Standalone:** BLE windows are time-sliced against the Wi-Fi sweep — a window
+  never opens mid-sweep and the sweep is held off while one is active, since an
+  active Wi-Fi scan starves BLE of coex airtime. Observations are GPS-stamped
+  via `captureGpsFix()` and written through the existing `appendBleRow()`, so
+  they get the same blacklist, CSV rotation and writer as Wi-Fi rows.
+- **Node mode:** observations are forwarded to the Core as 212-byte type-6
+  frames (`jcmkBleBuild`), returning the radio to the admin channel before
+  sending. Honors the Core-assigned role — a `wifi` node never opens a BLE
+  window, a `ble` node never runs the channel sweep.
+- **Core mode does not scan BLE locally**, matching the XIAO: a Core logs what
+  its nodes forward.
+- New config keys `bleEnabled` (default `false`), `bleScanDuration` (5 s),
+  `bleScanInterval` (30 s); `bleDedupeWindow` is parsed and ignored for
+  compatibility with older config files. Added a `validateConfig()` that clamps
+  the cross-field constraints on load, as the XIAO does.
+- `BleDedupe.h` copied into `TDongleC5_Piglet/` — the third copy of that header;
+  all three now cross-reference each other.
+- TFT: a BLE count row on the status page (only rendered when `bleEnabled`, so
+  the layout is untouched otherwise) and a forwarded-BLE tally on the mesh node
+  page. `status.json` gains `foundBle` and `bleEnabled`.
+
+**Protocol fix found while wiring roles:** the T-Dongle's `jcmk_admin_msg_t` was
+the legacy 10-byte struct with no trailing `role` byte, so as a Core it never
+told nodes their role, and as a node it never learned its own. It is now the
+11-byte frame that `docs/PROTOCOL.md` specifies and that the XIAO and PigletNode
+already used, with the documented length guards: channels applied at length ≥ 10,
+`role` read only at length ≥ 11. Third-party nodes read their own struct size and
+ignore the trailing byte, so nothing breaks in either direction.
+
 ### T-Dongle C5 parity with upstream v2.57–v2.58
 
 - **`autoStartAfterUpload` added to the T-Dongle firmware** — the option shipped

@@ -87,7 +87,7 @@ node.A1B2C3D4E5F7=ble             # this node: BLE only
 
 The role is delivered to each node over the existing mesh link (it rides the channel-assignment frame), so **no node-side config is needed** — a PigletNode honors any role directly. To discover a node's MAC, watch the Core's **Serial** output: when a node joins, the Core prints its full MAC and a ready-to-paste `node.<mac>=...` line. The Core's OLED mesh page also shows a per-node role glyph (`W` / `B` / `2`).
 
-Notes: a main-sketch node must also keep its own `bleEnabled=true` to honor a `ble`/`both` role (a `bleEnabled=false` node can only do Wi-Fi). Role edits are read once at boot — **reboot the Core** to apply. Old/3rd-party JCMK cores that don't send roles leave every node at `both`.
+Notes: a main-sketch or T-Dongle C5 node must also keep its own `bleEnabled=true` to honor a `ble`/`both` role (a `bleEnabled=false` node can only do Wi-Fi). Role edits are read once at boot — **reboot the Core** to apply. Old/3rd-party JCMK cores that don't send roles leave every node at `both`.
 
 
 ### Blacklisting networks/devices from the save file
@@ -114,14 +114,14 @@ dedupEnabled=true     # default: each MAC/BSSID logged once
 dedupEnabled=false    # log every sighting
 ```
 
-This covers both Wi-Fi and BLE on the main Piglet firmware (the Core / single-device setup). Blacklisting always runs first, so blacklisted devices are dropped regardless of this setting. The dedicated PigletNode firmware keeps its own log-once forwarding and is not affected by this flag. Reboot to apply.
+This covers both Wi-Fi and BLE on the main Piglet firmware and on the T-Dongle C5 firmware (the Core / single-device setup). Blacklisting always runs first, so blacklisted devices are dropped regardless of this setting. The dedicated PigletNode firmware keeps its own log-once forwarding and is not affected by this flag. Reboot to apply.
 
 
 ## Bluetooth LE Wardriving
 
 Piglet can passively scan for Bluetooth LE devices alongside Wi-Fi and log them to the **same WiGLE-1.6 CSV** with `Type=BLE` — so a single upload to WiGLE or WDGoWars carries both Wi-Fi and BLE observations.
 
-- **Opt-in** on the main firmware: set `bleEnabled=true` in `wardriver.cfg` (config block below). Off by default — no flash/RAM cost when disabled.
+- **Opt-in** on the main firmware and on the **T-Dongle C5** firmware: set `bleEnabled=true` in `wardriver.cfg` (config block below). Off by default — no flash/RAM cost when disabled.
 - **Always on** in the dedicated PigletNode firmware (see below).
 - **What's logged per device:** address + type (`[LE Public]` / `[LE Random]` / `[LE Resolvable]` / `[LE NonResolvable]`), advertised name, RSSI, 16-bit service UUIDs (in the RCOIs column, e.g. `FE9F;180F`), and the manufacturer company ID (MfgrId) — all GPS-stamped like Wi-Fi rows.
 - **In a mesh cluster:** each Node scans Wi-Fi and/or BLE (per its [assigned role](#assigning-node-scan-roles-core-sd-config), default both) and forwards observations to the Core, which stamps them with its own GPS and logs them. Nodes need no GPS or SD. Log-once dedupe keeps a device from flooding the log and the mesh.
@@ -158,6 +158,13 @@ A standalone firmware port is available for the **LilyGo T-Dongle C5** in the `T
 
 **Pages:** Status · Networks · Navigation · Pig animation · Mesh Node
 
+**BLE wardriving:** Supported, opt-in via `bleEnabled=true` in `/wardriver.cfg`
+(reboot to apply). Standalone, the dongle scans BLE alongside Wi-Fi and writes
+`Type=BLE` rows to the same CSV. As a mesh **Node** it forwards observations to
+the Core; as a **Core** it logs what its nodes forward and does not scan BLE
+itself — the same split as the XIAO firmware. Scanning is observer-only and
+never transmits. Requires the **NimBLE-Arduino** library (see below).
+
 ### T-Dongle C5 Required Libraries
 
 Install via Arduino Library Manager (`Sketch → Include Library → Manage Libraries`):
@@ -169,6 +176,7 @@ Install via Arduino Library Manager (`Sketch → Include Library → Manage Libr
 | Adafruit BusIO | Adafruit |
 | TinyGPSPlus | Mikal Hart |
 | ArduinoJson | Benoit Blanchon |
+| NimBLE-Arduino | h2zero |
 
 All networking, SPI, SD, ESP-Now, and ESP-IDF headers are included in the ESP32 Arduino core — no separate install needed.
 
@@ -580,6 +588,7 @@ Install via Arduino Library Manager:
 | Adafruit BusIO | Adafruit | Required by ST7735 |
 | TinyGPSPlus | Mikal Hart | GPS NMEA parsing |
 | ArduinoJson | Benoit Blanchon | v6.x or v7.x |
+| NimBLE-Arduino | h2zero | v2.x — BLE wardriving (`bleEnabled`) |
 
 All networking, SPI, SD, ESP-Now, and ESP-IDF headers are built into the ESP32 core.
 

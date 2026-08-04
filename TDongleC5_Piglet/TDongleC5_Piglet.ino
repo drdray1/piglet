@@ -52,7 +52,24 @@
 #include "JcmkBle.h"      // jcmk_ble_obs_msg_t (type 6 wire frame), jcmkBleParse
 #include "NodeRole.h"     // per-node scan roles (wifi/ble/both)
 #include "Blacklist.h"    // save-file blacklist (MAC / SSID-BLE-name)
+#include "BleDedupe.h"    // per-device log-once dedupe ring
 #include "GpsFix.h"       // GpsFix POD returned by captureGpsFix()
+
+// ---- BLE wardriving (opt-in via cfg.bleEnabled) ----
+// Passive observer. NimBLE is only pulled in when the SoC has Bluetooth
+// (PIGLET_HAS_BLE, decided in BleScanner.h). Implemented inline rather than in
+// a BleScanner.cpp because this is a single-file sketch and the scanner needs
+// the .ino's cfg/appendBleRow; the XIAO firmware has real headers and puts the
+// equivalent in BleScanner.cpp.
+#if PIGLET_HAS_BLE
+  #include <NimBLEDevice.h>
+  #include "esp_coexist.h"
+  #include "freertos/FreeRTOS.h"
+  #include "freertos/semphr.h"
+  #include <deque>
+  #include <cstring>
+  #include <cstdio>
+#endif
 
 // Firmware version
 #define FIRMWARE_VERSION "v2.58"
@@ -166,6 +183,15 @@ struct Config {
   // matches the upstream JCMK/Biscuit mac_history and the XIAO default.
   uint16_t bleMaxResults = 200;
 
+  // ---- BLE wardriving (see docs/piglet_bluetooth_implementation.md) ----
+  // Master enable. When false the NimBLE stack is never initialised, so there
+  // is no RAM cost beyond this bool. Requires reboot to change.
+  bool     bleEnabled      = false;
+  // BLE scan-window duration (s). Clamped to 1-10 to avoid starving Wi-Fi.
+  uint16_t bleScanDuration = 5;
+  // Time between BLE scan-window starts (s). Forced >= bleScanDuration + 5.
+  uint16_t bleScanInterval = 30;
+
   // ---- Per-node scan roles (Core assigns each node a task by MAC) ----
   // Role for any node NOT listed in nodeRoles[]. (wifi | ble | both)
   uint8_t      nodeDefaultRole = NODE_ROLE_BOTH;
@@ -231,6 +257,7 @@ static bool     prevGpsFix = false;
 static bool     prevSta = false;
 static uint32_t prevFound2G = 0;
 static uint32_t prevFound5G = 0;
+static uint32_t prevBleFound = 0;
 static float    prevSpeed = -999;
 static String   prevIp = "";
 static String   prevUploadMsg = "";
@@ -257,6 +284,10 @@ static const uint32_t AP_EXTEND_PROMPT_LEAD_MS = 30000UL;              // prompt
 // Counters
 static uint32_t networksFound2G = 0;
 static uint32_t networksFound5G = 0;
+// BLE devices logged in solo/standalone mode. Declared unconditionally so the
+// TFT/status-JSON code needs no PIGLET_HAS_BLE guards; stays 0 on a BLE-less
+// build or when cfg.bleEnabled is false.
+static uint32_t bleFound = 0;
 
 // Log state
 static File logFile;
@@ -451,6 +482,10 @@ static void cfgAssignKV(const String& k, const String& v) {
   else if (k == "autoStartAfterUpload") { String vv = v; vv.toLowerCase(); cfg.autoStartAfterUpload = (vv == "true" || vv == "1"); }
   else if (k == "dedupEnabled") { String vv = v; vv.toLowerCase(); cfg.dedupEnabled = (vv == "true" || vv == "1"); }
   else if (k == "bleMaxResults") { int n = v.toInt(); if (n >= 100 && n <= 2000) cfg.bleMaxResults = (uint16_t)n; }
+  else if (k == "bleEnabled") { String vv = v; vv.toLowerCase(); cfg.bleEnabled = (vv == "true" || vv == "1"); }
+  else if (k == "bleScanDuration") { int n = v.toInt(); if (n >= 1 && n <= 10) cfg.bleScanDuration = (uint16_t)n; }
+  else if (k == "bleScanInterval") { int n = v.toInt(); if (n >= 5 && n <= 300) cfg.bleScanInterval = (uint16_t)n; }
+  else if (k == "bleDedupeWindow") { /* deprecated: dedup is log-once. Parsed and ignored so old configs still load. */ }
   else if (k == "nodeDefaultRole") { uint8_t r; if (roleFromStr(v.c_str(), r)) cfg.nodeDefaultRole = r; }
   else if (k.startsWith("node.")) {
     // node.<12hex>=wifi|ble|both — per-node scan role addressed by full MAC.
@@ -502,10 +537,31 @@ static bool saveConfigToSD() {
   f.print("dedupEnabled=");    f.println(cfg.dedupEnabled ? "true" : "false");
   f.println("# Log-once dedup ring cap (memory knob). 100-2000.");
   f.print("bleMaxResults=");   f.println(cfg.bleMaxResults);
+  f.println("");
+  f.println("# ---- BLE Wardriving (optional) ----");
+  f.println("# Passively scan for Bluetooth LE devices alongside Wi-Fi and log");
+  f.println("# them to the same CSV with Type=BLE. Requires reboot if changing bleEnabled.");
+  f.print("bleEnabled=");      f.println(cfg.bleEnabled ? "true" : "false");
+  f.println("# BLE scan-window duration (s). 1-10.");
+  f.print("bleScanDuration="); f.println(cfg.bleScanDuration);
+  f.println("# Time between BLE scan windows (s). Forced to >= bleScanDuration + 5.");
+  f.print("bleScanInterval="); f.println(cfg.bleScanInterval);
 
   f.flush(); f.close();
   Serial.println("[CFG] Saved OK");
   return true;
+}
+
+// Clamp cross-field / out-of-range constraints that single-key parsing in
+// cfgAssignKV can't see. Idempotent and safe to call on default config.
+// Mirrors validateConfig() in the XIAO firmware's Config.cpp.
+static void validateConfig() {
+  if (cfg.bleScanDuration < 1)  cfg.bleScanDuration = 1;
+  if (cfg.bleScanDuration > 10) cfg.bleScanDuration = 10;
+  if (cfg.bleScanInterval < (uint16_t)(cfg.bleScanDuration + 5))
+    cfg.bleScanInterval = (uint16_t)(cfg.bleScanDuration + 5);
+  if (cfg.bleMaxResults < 100)  cfg.bleMaxResults = 100;
+  if (cfg.bleMaxResults > 2000) cfg.bleMaxResults = 2000;
 }
 
 static bool loadConfigFromSD() {
@@ -522,12 +578,14 @@ static bool loadConfigFromSD() {
     if (parseKeyValueLine(line, k, v)) cfgAssignKV(k, v);
   }
   f.close();
+  validateConfig();
 
   Serial.println("[CFG] Loaded config:");
   Serial.print("      homeSsid: ");      Serial.println(cfg.homeSsid);
   Serial.print("      gpsBaud: ");       Serial.println(cfg.gpsBaud);
   Serial.print("      scanMode: ");      Serial.println(cfg.scanMode);
   Serial.print("      wigle token: ");   Serial.println(cfg.wigleBasicToken.length() ? "(set)" : "(empty)");
+  Serial.print("      bleEnabled: ");    Serial.println(cfg.bleEnabled ? "true" : "false");
   return true;
 }
 
@@ -782,6 +840,143 @@ static void appendBleRow(const String& bda, const String& name, uint8_t addrType
                                  altM, accM, serviceUuids.c_str(), mfgrId);
   writeCsvLine(String(row.c_str()));
 }
+
+// ================================================================
+//  BLE wardriving — passive observer (opt-in via cfg.bleEnabled)
+//
+//  Mirrors BleScanner.cpp in the XIAO firmware and the inline scanner in
+//  PigletNode.ino, but driven by cfg rather than compile-time constants.
+//  Solo/standalone: observations are GPS-stamped and written to the CSV.
+//  Node mode: observations are forwarded to the Core as type-6 frames, which
+//  stamps them with its own GPS (see coreLogBleObs).
+//  Core mode does NOT scan locally — same as the XIAO, whose Core only logs
+//  what its nodes forward.
+// ================================================================
+#if PIGLET_HAS_BLE
+
+static SemaphoreHandle_t          bleMutex      = nullptr;
+static BleDedupe*                 bleDedupe     = nullptr;   // sized from cfg at bleBegin()
+static std::deque<BleObservation> blePending;                // hand-off FIFO
+static size_t                     bleFifoMax    = 500;       // FIFO cap (bounds RAM)
+static uint32_t                   bleLifetime   = 0;         // unique devices since boot
+static uint32_t                   bleSentCount  = 0;         // node mode: forwarded to Core
+static bool                       bleInited     = false;
+static bool                       bleScanning   = false;
+static uint32_t                   bleScanEndsMs = 0;
+
+// RAII lock for state shared between the NimBLE host task and the loop task.
+struct BleLock {
+  bool held = false;
+  BleLock()  { if (bleMutex) held = (xSemaphoreTake(bleMutex, portMAX_DELAY) == pdTRUE); }
+  ~BleLock() { if (held) xSemaphoreGive(bleMutex); }
+};
+
+// RUNS IN THE NIMBLE HOST TASK. Byte-copies and container ops only — no SD, no
+// WiFi, no ESP-Now, no Serial here; those take mutexes the loop task may hold.
+class TdBleObserver : public NimBLEScanCallbacks {
+public:
+  void onResult(const NimBLEAdvertisedDevice* dev) override {
+    if (!dev || !bleDedupe) return;
+    std::string a = dev->getAddress().toString();  // big-endian display order
+    if (a.size() < 17) return;
+    uint8_t bda[6];
+    parseBda(a.c_str(), bda);
+    uint8_t addrType = dev->getAddress().getType();
+    uint32_t now = millis();
+
+    BleLock lk;
+    // Log-once gate; when dedup is disabled every observation is emitted.
+    if (cfg.dedupEnabled && !bleDedupe->shouldEmit(bda, addrType)) return;
+    bleLifetime++;
+    if (blePending.size() >= bleFifoMax) blePending.pop_front();  // bound memory
+
+    BleObservation o = {};
+    formatBda(bda, o.addr);
+    o.addrType     = addrType;
+    o.channel      = 37;     // NimBLE 2.x doesn't reliably report the adv channel
+    o.rssi         = (int8_t)dev->getRSSI();
+    o.observedAtMs = now;
+
+    std::string name = dev->getName();
+    std::strncpy(o.name, name.c_str(), sizeof(o.name) - 1);
+
+    if (dev->haveManufacturerData()) {
+      std::string md = dev->getManufacturerData();
+      if (md.size() >= 2)
+        o.mfgrId = (uint16_t)((uint8_t)md[0] | ((uint8_t)md[1] << 8));
+    }
+    if (dev->haveServiceUUID()) {
+      char* p = o.serviceUuids;
+      size_t rem = sizeof(o.serviceUuids);
+      for (int i = 0; i < dev->getServiceUUIDCount() && rem > 5; i++) {
+        char uuid[5];
+        // Keep only 16-bit UUIDs, normalised to 4-hex uppercase (e.g. FE9F).
+        if (!normalizeBleUuid16(dev->getServiceUUID(i).toString(), uuid)) continue;
+        int n = std::snprintf(p, rem, "%s%s", (p == o.serviceUuids ? "" : ";"), uuid);
+        if (n < 0 || (size_t)n >= rem) break;
+        p += n; rem -= (size_t)n;
+      }
+    }
+    blePending.push_back(o);
+  }
+};
+static TdBleObserver bleObserver;
+
+// Idempotent. Only called when cfg.bleEnabled, so a bleEnabled=false boot never
+// initialises NimBLE and pays no RAM cost beyond the statics above.
+static void bleBegin() {
+  if (bleInited) return;
+  if (!bleMutex)  bleMutex  = xSemaphoreCreateMutex();
+  bleFifoMax = cfg.bleMaxResults ? cfg.bleMaxResults : 200;
+  if (!bleDedupe) bleDedupe = new BleDedupe(bleFifoMax);
+
+  NimBLEDevice::init("piglet-dongle");
+  NimBLEDevice::setPower(ESP_PWR_LVL_P9);
+  NimBLEScan* scan = NimBLEDevice::getScan();
+  scan->setScanCallbacks(&bleObserver, /*wantDuplicates=*/false);
+  scan->setActiveScan(false);   // PASSIVE ONLY — never transmit SCAN_REQ (coex)
+  scan->setInterval(100);       // ms between channel listens (NimBLE 2.x units)
+  scan->setWindow(60);          // 60 ms listen -> 60% duty, leaves coex airtime
+
+  bleInited = true;
+  Serial.println("[BLE] NimBLE observer initialised");
+}
+
+static void bleStartWindow() {
+  if (bleScanning) return;
+  esp_coex_preference_set(ESP_COEX_PREFER_BT);  // favour BLE during the window
+  // NimBLE 2.x: start() duration is milliseconds. Non-blocking — NimBLE stops
+  // itself when the duration elapses.
+  uint32_t durMs = (uint32_t)cfg.bleScanDuration * 1000UL;
+  NimBLEDevice::getScan()->start(durMs, /*is_continue=*/false);
+  bleScanning   = true;
+  bleScanEndsMs = millis() + durMs;
+  Serial.printf("[BLE] scan window start (%u s)\n", (unsigned)cfg.bleScanDuration);
+}
+
+// Window expiry — NimBLE already stopped on its own timer; restore coex balance.
+static void bleTick() {
+  if (bleScanning && millis() >= bleScanEndsMs) {
+    esp_coex_preference_set(ESP_COEX_PREFER_BALANCE);
+    bleScanning = false;
+    uint32_t life; size_t tracked;
+    { BleLock lk; life = bleLifetime; tracked = bleDedupe ? bleDedupe->size() : 0; }
+    Serial.printf("[BLE] window end — %u unique lifetime, %u tracked\n",
+                  (unsigned)life, (unsigned)tracked);
+  }
+  // The log-once ring self-bounds via FIFO eviction; nothing to prune.
+}
+
+// Drain the hand-off FIFO into `out`. Returns the number appended.
+static size_t bleConsume(std::vector<BleObservation>& out) {
+  BleLock lk;
+  size_t n = blePending.size();
+  out.reserve(out.size() + n);
+  while (!blePending.empty()) { out.push_back(blePending.front()); blePending.pop_front(); }
+  return n;
+}
+
+#endif  // PIGLET_HAS_BLE
 
 // Forward declarations needed by WDGoWars and WiGLE batch functions
 static void tftWigleUploadScreen(uint32_t done, uint32_t total, const String& filename);
@@ -1437,6 +1632,16 @@ static void updateTFT(float speedValue) {
   prevFound5G = networksFound5G;
   y += line;
 
+  // BLE count — only rendered when BLE is enabled, so a non-BLE build/config
+  // keeps the previous layout exactly. cfg.bleEnabled is fixed at boot, so the
+  // row never appears or disappears mid-session.
+  if (cfg.bleEnabled) {
+    repaintLine(forceAll || prevBleFound != bleFound, y,
+      String("BLE:  ") + String(bleFound));
+    prevBleFound = bleFound;
+    y += line;
+  }
+
   // GPS
   repaintLine(forceAll || prevGpsFix != gpsHasFix, y,
     String("GPS: ") + (gpsHasFix ? "FIX" : "---") + " " + String(uiGpsSats) + "sat");
@@ -1513,6 +1718,7 @@ static void forceStatusFullRedraw() {
   prevSta         = !prevSta;
   prevFound2G     = 0xFFFFFFFF;
   prevFound5G     = 0xFFFFFFFF;
+  prevBleFound    = 0xFFFFFFFF;
   prevSpeed       = -9999.0f;
   prevIp          = "";
   prevUploadMsg   = "";
@@ -1980,7 +2186,15 @@ typedef struct __attribute__((packed)) {
   uint8_t node_count;
   uint8_t start_channel_idx;
   uint8_t end_channel_idx;
+  uint8_t role;               // NodeRole (Piglet extension; trailing → len-guarded)
 } jcmk_admin_msg_t;
+// Byte-identical with the copies in Arduino Files/Piglet/MeshNode.cpp and
+// PigletNode.ino, per docs/PROTOCOL.md. The legacy JCMK admin frame is 10 bytes
+// (no role); third-party nodes read their own sizeof and ignore the trailing
+// role byte, and our node handler accepts len >= 10.
+static_assert(sizeof(jcmk_admin_msg_t) == 11, "jcmk_admin_msg_t must be 11 bytes");
+// Length of the legacy admin frame (everything up to but excluding `role`).
+static constexpr int JCMK_ADMIN_LEGACY_LEN = (int)sizeof(jcmk_admin_msg_t) - 1;
 
 typedef struct __attribute__((packed)) {
   char     magic[4];
@@ -2009,6 +2223,7 @@ static uint8_t  jcmkCoreMac[6]  = {0};
 static uint8_t  jcmkStartIdx    = 0;
 static uint8_t  jcmkEndIdx      = 0;  // set in enterNodeMode
 static uint8_t  jcmkAssignVer   = 0;
+static uint8_t  jcmkRole        = NODE_ROLE_BOTH;  // task assigned by Core (wifi/ble/both)
 static uint32_t jcmkNetworksFound = 0;  // raw networks seen each session
 static uint32_t jcmkSentCount   = 0;
 static uint32_t jcmkHbCounter   = 0;
@@ -2102,6 +2317,19 @@ static void jcmkSendHeartbeat() {
   msg.len     = 0;
   esp_now_send(JCMK_BCAST, (uint8_t*)&msg, sizeof(msg));
 }
+
+#if PIGLET_HAS_BLE
+// Forward one observation to the Core as a 212-byte type-6 frame. Legacy and
+// third-party Cores dispatch on type with no default case, so they accept the
+// length and silently drop it (docs/PROTOCOL.md).
+static void jcmkSendBleObs(const BleObservation& o) {
+  jcmk_ble_obs_msg_t msg;
+  jcmkBleBuild(msg, o, ++jcmkHbCounter);
+  const uint8_t* dst = jcmkHaveCore ? jcmkCoreMac : JCMK_BCAST;
+  esp_now_send(dst, (uint8_t*)&msg, sizeof(msg));
+  bleSentCount++;
+}
+#endif
 
 static void jcmkSendText(const String& s) {
   jcmk_text_msg_t msg = {};
@@ -2279,13 +2507,17 @@ static void jcmkOnRecv(const esp_now_recv_info_t* info,
     if (type == JCMK_MSG_CORE_REPLY && !jcmkHaveCore && !jcmkCoreFoundPending) {
       memcpy(jcmkCoreMacPending, info->src_addr, 6);
       jcmkCoreFoundPending = true;
-    } else if (type == JCMK_MSG_ADMIN && len >= (int)sizeof(jcmk_admin_msg_t)) {
+    } else if (type == JCMK_MSG_ADMIN && len >= JCMK_ADMIN_LEGACY_LEN) {
+      // Base guard is the legacy (pre-role) struct size so a 10-byte admin from
+      // an old/3rd-party Core still assigns channels. Read role only if present.
       const jcmk_admin_msg_t* adm = (const jcmk_admin_msg_t*)data;
       if (adm->assignment_version != jcmkAssignVer) {
         jcmkAssignVer = adm->assignment_version;
         jcmkStartIdx  = adm->start_channel_idx;
         jcmkEndIdx    = adm->end_channel_idx;
       }
+      if (len >= (int)sizeof(jcmk_admin_msg_t))
+        jcmkRole = adm->role;   // applied unconditionally (idempotent)
     }
   }
 }
@@ -2343,6 +2575,7 @@ static void coreReassignChannels() {
       msg.assignment_version = coreAssignVer;
       msg.node_index = n; msg.start_channel_idx = coreNodes[slot].startIdx;
       msg.end_channel_idx = coreNodes[slot].endIdx;
+      msg.role = coreNodes[slot].role;   // wifi/ble/both from /wardriver.cfg
       esp_now_send(coreNodes[slot].mac, (uint8_t*)&msg, sizeof(msg));
     }
     delay(10);
@@ -2367,6 +2600,7 @@ static void coreResendAdminToAll() {
       msg.assignment_version = coreAssignVer;
       msg.node_index = n; msg.start_channel_idx = coreNodes[i].startIdx;
       msg.end_channel_idx = coreNodes[i].endIdx;
+      msg.role = coreNodes[i].role;      // wifi/ble/both from /wardriver.cfg
       esp_now_send(coreNodes[i].mac, (uint8_t*)&msg, sizeof(msg));
     }
     n++;
@@ -2576,6 +2810,7 @@ static void enterNodeMode() {
   jcmkStartIdx          = 0;
   jcmkEndIdx            = JCMK_NUM_CHANNELS - 1;
   jcmkAssignVer         = 0;
+  jcmkRole              = NODE_ROLE_BOTH;  // until the Core assigns a task
   nodeScanActive        = false;
   nodeScanChOffset      = 0;
   nodeScanAdminWin      = false;
@@ -2674,8 +2909,44 @@ static void nodeModeTick() {
     jcmkSendHeartbeat();
   }
 
+#if PIGLET_HAS_BLE
+  // ---- BLE scan + forward (node mode) ----
+  // Interleave a BLE window with the channel sweep: open only while the sweep
+  // is idle, hold the sweep off while a window is active, and return the radio
+  // to the admin channel before forwarding. One radio serves Wi-Fi hop +
+  // ESP-Now + BLE, so these must not overlap.
+  // Role gate: a Wi-Fi-only node never opens a window. BLE still requires local
+  // bleEnabled to have initialised NimBLE — see docs/cluster-node.cfg.
+  bool bleWindowActive = false;
+  if (jcmkHaveCore && cfg.bleEnabled && bleInited && jcmkRole != NODE_ROLE_WIFI) {
+    static uint32_t lastNodeBleMs = 0;
+    if (!bleScanning && !nodeScanActive &&
+        (now - lastNodeBleMs) >= (uint32_t)cfg.bleScanInterval * 1000UL) {
+      bleStartWindow();
+      lastNodeBleMs = now;
+    }
+    bleTick();
+    bleWindowActive = bleScanning;
+
+    if (!bleWindowActive) {
+      std::vector<BleObservation> obs;
+      if (bleConsume(obs) > 0) {
+        jcmkSetChannel(JCMK_ESPNOW_CH);   // back to the admin channel before sends
+        for (const BleObservation& o : obs) jcmkSendBleObs(o);
+        Serial.printf("[MESH] forwarded %u BLE obs (%lu total)\n",
+                      (unsigned)obs.size(), (unsigned long)bleSentCount);
+      }
+    }
+  }
+
+  // Per-channel async scan — runs while connected to Core, but never during a
+  // BLE window (an active Wi-Fi scan would starve BLE of coex airtime) and
+  // never on a BLE-only node.
+  if (jcmkHaveCore && !bleWindowActive && jcmkRole != NODE_ROLE_BLE) nodeDoScanTick();
+#else
   // Per-channel async scan — runs continuously while connected to Core
   if (jcmkHaveCore) nodeDoScanTick();
+#endif
 }
 
 // ================================================================
@@ -2795,6 +3066,9 @@ static void drawPageMeshNode() {
 
     tft.fillRect(0, 77, W, 10, BLACK); tft.setCursor(2, 78);
     tft.print("Sent: "); tft.print(jcmkSentCount);
+#if PIGLET_HAS_BLE
+    if (cfg.bleEnabled) { tft.print(" B:"); tft.print(bleSentCount); }
+#endif
 
     tft.fillRect(0, 90, W, 10, BLACK); tft.setCursor(2, 91);
     tft.print("ENOW ch: "); tft.print(JCMK_ESPNOW_CH);
@@ -2867,6 +3141,7 @@ static void handleStatus() {
   doc["gpsFix"] = gpsHasFix;
   doc["found2g"] = networksFound2G;
   doc["found5g"] = networksFound5G;
+  doc["foundBle"] = bleFound;
   doc["wifiConnected"] = (WiFi.status() == WL_CONNECTED);
   doc["staIp"] = (WiFi.status() == WL_CONNECTED) ? WiFi.localIP().toString() : "";
   doc["apClientsSeen"] = apClientSeen;
@@ -2911,6 +3186,7 @@ static void handleStatus() {
   c["meshModeOnBoot"] = cfg.meshModeOnBoot;
   c["rotateScreen180"] = cfg.rotateScreen180;
   c["autoStartAfterUpload"] = cfg.autoStartAfterUpload;
+  c["bleEnabled"] = cfg.bleEnabled;
 
   String out; serializeJson(doc, out);
   server.send(200, "application/json", out);
@@ -3577,6 +3853,7 @@ void setup() {
   Serial.printf("[BOOT] Reset reason: %d\n", (int)esp_reset_reason());
   networksFound2G = 0;
   networksFound5G = 0;
+  bleFound        = 0;
 
   Serial.println("=== Piglet Wardriver Boot (T-Dongle C5) ===");
 
@@ -3778,6 +4055,13 @@ void setup() {
     Serial.print("[SD] Log file: "); Serial.println(lfOk ? "OK" : "FAIL");
   }
 
+#if PIGLET_HAS_BLE
+  // Bring up NimBLE once, after the config load, so both the solo loop and node
+  // mode find it ready. Core mode never opens a window but the cost is one
+  // idle host task, matching the XIAO's mesh begin.
+  if (cfg.bleEnabled) bleBegin();
+#endif
+
   // Auto-start mesh mode if meshModeOnBoot=Core|Node.
   // Core mode: STA was used for upload above and must be torn down so
   // ESP-Now can start cleanly on the admin channel without interference.
@@ -3940,7 +4224,41 @@ void loop() {
     wifi_mode_t m = WiFi.getMode();
     bool apActive = (m == WIFI_AP || m == WIFI_AP_STA);
     bool allowScan = scanningEnabled && sdOk && !apActive && (userScanOverride || !autoPaused);
+#if PIGLET_HAS_BLE
+    // ---- BLE scheduling (solo / standalone mode) ----
+    // Insert a BLE window every cfg.bleScanInterval seconds, time-sliced with
+    // the Wi-Fi sweeps. While a BLE window is active we hold off starting a new
+    // Wi-Fi scan (an active Wi-Fi scan would starve BLE of coex airtime), and we
+    // never start a BLE window mid Wi-Fi sweep.
+    bool bleWindowActive = false;
+    if (cfg.bleEnabled && bleInited && allowScan) {
+      static uint32_t lastBleStartMs = 0;
+      if (!bleScanning &&
+          (millis() - lastBleStartMs) >= (uint32_t)cfg.bleScanInterval * 1000UL &&
+          WiFi.scanComplete() != WIFI_SCAN_RUNNING) {
+        bleStartWindow();
+        lastBleStartMs = millis();
+      }
+      bleTick();
+      bleWindowActive = bleScanning;
+
+      std::vector<BleObservation> obs;
+      if (bleConsume(obs) > 0) {
+        GpsFix g = captureGpsFix();
+        String seen = iso8601NowUTC();
+        for (const BleObservation& o : obs) {
+          appendBleRow(String(o.addr), String(o.name), o.addrType, seen,
+                       o.channel, o.rssi, g.lat, g.lon, g.altM, g.accM,
+                       String(o.serviceUuids), o.mfgrId);
+          bleFound++;
+        }
+        Serial.printf("[BLE] logged %u obs\n", (unsigned)obs.size());
+      }
+    }
+    if (allowScan && !bleWindowActive) doScanOnce();
+#else
     if (allowScan) doScanOnce();
+#endif
   }
 
   delay(10);

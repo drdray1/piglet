@@ -14,7 +14,8 @@
 // Pure / host-testable: no Arduino, NimBLE, clock, or STL-beyond-container
 // dependency.
 //
-// NOTE: an identical copy lives at PigletNode/BleDedupe.h — keep the two in sync.
+// NOTE: identical copies live at PigletNode/BleDedupe.h and
+// TDongleC5_Piglet/BleDedupe.h — keep all three in sync.
 #pragma once
 
 #include <cstddef>
