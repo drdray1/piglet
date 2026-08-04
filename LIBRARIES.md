@@ -14,7 +14,10 @@ Install via the Arduino IDE Library Manager
 | ArduinoJson | Benoit Blanchon | WebUI `/status.json` etc. |
 
 (The T-Dongle C5 variant swaps the SSD1306 driver for the Adafruit ST7735/ST7789
-library — see the T-Dongle section in the README.)
+library — see the T-Dongle section in the README. On the C5 it needs
+**NimBLE-Arduino installed to compile at all**, whatever `bleEnabled` is set to:
+`PIGLET_HAS_BLE` keys off the chip's `CONFIG_BT_ENABLED`, so the observer is
+built in and `bleEnabled` only gates it at runtime.)
 
 ## BLE wardriving (only for `bleEnabled=true` builds)
 

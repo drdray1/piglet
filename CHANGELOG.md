@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Docs
+
+- **README: corrected the T-Dongle board target.** It said to select
+  `ESP32C5 Dev Module`, whose default partition gives a 1.25 MB app — the
+  firmware is ~1.75 MB with BLE and will not link. Use `XIAO_ESP32C5` (8 MB
+  layout, 3 MB app) or set Partition Scheme → Huge APP. Confirmed against real
+  hardware: ESP32-C5 rev v1.0, 16 MB flash.
+- README: added a T-Dongle config-key support table (what it shares with the
+  XIAO, and that `board`/`battPin`/`batteryTest` are N/A), plus a note that
+  `bleEnabled=true` alone does nothing on a Core-mode dongle — Core never scans
+  BLE locally, so standalone BLE also needs `meshModeOnBoot=none`.
+- `docs/PROTOCOL.md`: the admin struct now has three copies to keep in sync;
+  T-Dongle nodes are also Biscuit-classified; type-6 senders/receivers listed;
+  and the admin length guard's **upper** bound is documented with the failure it
+  prevents.
+- `LIBRARIES.md`: NimBLE is a compile-time requirement on the T-Dongle whatever
+  `bleEnabled` says. `docs/cluster-node.cfg`: notes for using a T-Dongle as node.
+
 ### BLE wardriving on the T-Dongle C5
 
 The T-Dongle previously logged only the BLE observations its mesh nodes
@@ -91,10 +109,9 @@ All three sketches verified to compile against ESP32 core 3.3.10
 (PigletNode needs a `huge_app` partition scheme; it overflows the default).
 
 Remaining T-Dongle differences from the XIAO firmware, all deliberate:
-`battPin`/`batteryTest` (no battery on the dongle), `board` (fixed pinmap), and
-the `ble*` scan keys — the T-Dongle logs mesh-forwarded BLE from nodes but has
-no local BLE scanner of its own, so `bleEnabled` and friends have nothing to
-drive. Porting the scanner is a separate piece of work.
+`battPin`/`batteryTest` (no battery on the dongle) and `board` (fixed pinmap).
+The `ble*` scan keys were also missing at this point; they arrived with the
+scanner port in the entry above.
 
 ### BLE wardriving (opt-in via `bleEnabled`)
 

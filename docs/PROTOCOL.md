@@ -23,8 +23,9 @@ and silently drop the frame. No interop is broken in any direction.
 
 ## Type 5 — `jcmk_admin_msg_t` (channel + role)
 
-Defined in `Arduino Files/Piglet/MeshNode.cpp` (and a byte-identical copy in
-`PigletNode/PigletNode.ino`). The Core sends this to JCMK/Piglet nodes at join
+Defined in `Arduino Files/Piglet/MeshNode.cpp`, with byte-identical copies in
+`PigletNode/PigletNode.ino` and `TDongleC5_Piglet/TDongleC5_Piglet.ino` — keep
+all three in sync. The Core sends this to JCMK/Piglet nodes at join
 and on a periodic refresh. Biscuit nodes instead get the Biscuit role+config
 pair (type 5 text payload + type 10), selected by `isBiscuit`.
 
@@ -45,22 +46,44 @@ length-guarded both ways:** a Piglet node accepts an admin frame of length ≥ 1
 from an old/third-party Core leaves the node at its default role (`both`). A
 third-party node reading its own 10-byte struct ignores the trailing byte.
 Channel fields are applied only when `assignment_version` advances; `role` is
-applied unconditionally (idempotent). Role is set per-node from the Core's
+applied unconditionally (idempotent).
+
+> **The length guard needs an UPPER bound too.** Biscuit-style Cores also send
+> type 5 as a full-size 212-byte `jcmk_text_msg_t` role frame (below), and that
+> frame's `text[0]` lands at offset 10 — exactly this struct's `role` byte — with
+> value `1`, which is `NODE_ROLE_WIFI`. A guard of only `len >= 10` therefore
+> parses that text frame as an admin frame, pinning the node to Wi-Fi-only
+> (silently disabling its BLE) and taking garbage channel indices from the
+> `counter`/`len` bytes. Guard with `len >= 10 && len <= sizeof(...)` so only
+> genuine 10/11-byte admin frames are accepted. `TDongleC5_Piglet.ino` does this;
+> `MeshNode.cpp` and `PigletNode.ino` currently do not, but there the type-10
+> frame that follows ~10 ms later overwrites both role and channels, so the
+> mis-parse is transient rather than sticky. Role is set per-node from the Core's
 `/wardriver.cfg` (`node.<MAC>=wifi|ble|both`); editing it requires a Core reboot.
 
-**PigletNodes are flagged Biscuit.** A PigletNode sends full-size (212-byte)
+**PigletNodes and T-Dongle nodes are flagged Biscuit.** Both send full-size (212-byte)
 `CORE_REQUEST`/`TEXT`/`HEARTBEAT` frames, so the Core's size heuristic classifies
 it as a Biscuit node and drives it via the Biscuit role+config path (type 5 text
 + type 10 `MSG_CONFIG_UPDATE`) instead of the binary type-5 admin above. To carry
 the role over that path, the Core appends `;role=wifi|ble|both` to the type-10
-`channels=...;dwell=...` string, and PigletNode parses it (`role=` token, value
-terminated by `;` or end). Real Biscuit nodes ignore the unknown key. So a Piglet
-node receives its role whether it is classified JCMK (type-5 `role` byte) or
-Biscuit (type-10 `;role=`); both set the same node-side role and are idempotent.
+`channels=...;dwell=...` string, and both PigletNode and the T-Dongle parse it
+(`role=` token, value terminated by `;` or end). Real Biscuit nodes ignore the
+unknown key. So a Piglet node receives its role whether it is classified JCMK
+(type-5 `role` byte) or Biscuit (type-10 `;role=`); both set the same node-side
+role and are idempotent.
+
+In practice **every** Piglet-family node reaches a Piglet Core down the Biscuit
+path, because they all send 212-byte `CORE_REQUEST`s. The binary type-5 admin
+frame above is therefore the path used by genuine JCMK/third-party nodes — which
+is why a node that only implements type 5 and not type 10 (as the T-Dongle did
+before 2026-08) silently gets no channel range and no role from a Piglet Core.
 
 ## Type 6 — `jcmk_ble_obs_msg_t` (frozen, 212 bytes)
 
-Defined in `Arduino Files/Piglet/JcmkBle.h`. **Do not reorder or resize existing
+Defined in `Arduino Files/Piglet/JcmkBle.h`, copied into `PigletNode/` and
+`TDongleC5_Piglet/`. Sent by any Piglet node scanning BLE (main sketch node mode,
+PigletNode, T-Dongle node mode); received and logged by any Piglet Core (main
+sketch or T-Dongle). **Do not reorder or resize existing
 fields** — append only, via the `_pad` block, and shrink `_pad` to match so the
 total stays 212. A `static_assert` enforces the size.
 

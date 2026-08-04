@@ -165,6 +165,31 @@ the Core; as a **Core** it logs what its nodes forward and does not scan BLE
 itself — the same split as the XIAO firmware. Scanning is observer-only and
 never transmits. Requires the **NimBLE-Arduino** library (see below).
 
+> **Note:** `bleEnabled` defaults to `false`, and a dongle running as a mesh
+> **Core** never scans BLE locally by design. So to actually collect BLE on a
+> standalone dongle you need *both* `bleEnabled=true` **and**
+> `meshModeOnBoot=none` (or `node`). Setting only `bleEnabled=true` on a
+> Core-mode dongle changes nothing.
+
+### T-Dongle C5 config keys
+
+The dongle reads the same `/wardriver.cfg` as the XIAO firmware and supports
+nearly all of the same keys. Differences, all down to hardware:
+
+| Key | T-Dongle | Notes |
+|---|---|---|
+| `bleEnabled`, `bleScanDuration`, `bleScanInterval` | ✅ | BLE wardriving (above) |
+| `dedupEnabled`, `bleMaxResults` | ✅ | [Log-once dedup](#log-once-dedup) |
+| `autoStartAfterUpload` | ✅ | Also in the web UI Config panel |
+| `nodeDefaultRole`, `node.<MAC>=…` | ✅ | [Node scan roles](#assigning-node-scan-roles-core-sd-config) |
+| `blacklistMac`, `blacklistSsid` | ✅ | [Blacklisting](#blacklisting-networksdevices-from-the-save-file) |
+| `meshModeOnBoot`, `rotateScreen180`, `deviceName`, `gpsBaud`, `scanMode`, `speedUnits`, `maxBootUploads`, WiGLE/WDGoWars/Wi-Fi keys | ✅ | Same as XIAO |
+| `board` | ❌ | Fixed pinmap — the dongle is one known board |
+| `battPin`, `batteryTest` | ❌ | No battery on a USB dongle |
+
+Keys the dongle doesn't recognise are ignored, so a config file shared with a
+XIAO works on both.
+
 ### T-Dongle C5 Required Libraries
 
 Install via Arduino Library Manager (`Sketch → Include Library → Manage Libraries`):
@@ -180,7 +205,16 @@ Install via Arduino Library Manager (`Sketch → Include Library → Manage Libr
 
 All networking, SPI, SD, ESP-Now, and ESP-IDF headers are included in the ESP32 Arduino core — no separate install needed.
 
-**Board setup:** Add `https://espressif.github.io/arduino-esp32/package_esp32_dev_index.json` to Additional Boards Manager URLs, install **esp32 by Espressif v3.x or later**, and select **ESP32C5 Dev Module**.
+**Board setup:** Add `https://espressif.github.io/arduino-esp32/package_esp32_dev_index.json` to Additional Boards Manager URLs and install **esp32 by Espressif v3.x** (not 4.x — see [`LIBRARIES.md`](LIBRARIES.md)).
+
+> **Select `XIAO_ESP32C5` as the board, not `ESP32C5 Dev Module`.** The dongle is
+> not a XIAO, but that board profile is the one that fits: it uses an 8 MB layout
+> with a **3 MB app partition**, while `ESP32C5 Dev Module` defaults to a 4 MB
+> layout with only a **1.25 MB** app partition — the firmware is ~1.75 MB with
+> BLE enabled and will fail to link with *"text section exceeds available space"*.
+> If you prefer `ESP32C5 Dev Module`, set **Tools → Partition Scheme → Huge APP**.
+> Verified against a real T-Dongle C5: ESP32-C5 rev v1.0, 16 MB flash — writing
+> the 8 MB layout to it is fine, the remaining flash is simply unused.
 
 
 ## Supported Hardware
