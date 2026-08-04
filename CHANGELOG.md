@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### Build fixes
+
+- **XIAO ESP32-C3 did not compile at all.** Upstream's v2.58 added C3 support
+  but left `enterDeepSleep()` routing the C3 through an `esp_sleep_enable_ext0_wakeup()`
+  fallback — the RISC-V parts have no ext0 wake source, so that function is not
+  even declared for them and the build died at `Piglet.ino:73`. The C3 now uses
+  `esp_deep_sleep_enable_gpio_wakeup()` alongside the C5/C6.
+- **`enterDeepSleep()` now refuses to sleep on a board with no button.** The C3
+  pinmap has `btn = -1`; every wake path is a button press, so it would have
+  slept with no way back short of a power cycle — and `1ULL << -1` is undefined
+  behaviour besides.
+- Documented a **verified build matrix** in `docs/setup/README.md`: all nine
+  firmware/board combinations clean-built against esp32 core 3.3.10. Five of
+  them need **Partition Scheme → Huge APP** (Piglet on C6 133% and C3 121%,
+  T-Dongle on ESP32C5 Dev Module 135%, PigletNode on ESP32C5 Dev Module 106%,
+  Waveshare 100%) — the firmware has outgrown the 1.25 MB default app partition
+  on every profile except the `XIAO_*` ones.
+- **The Waveshare port needs LovyanGFX**, which was in no library list. Without
+  it that sketch fails instantly on a missing header. Added to `LIBRARIES.md`
+  and its setup guide, along with the fact that no "Waveshare ESP32-C6 LCD 1.47"
+  board entry exists — use `ESP32C6 Dev Module`.
+
 ### Docs — setup guides reorganised
 
 All example configs and setup instructions now live under **`docs/setup/`**, one

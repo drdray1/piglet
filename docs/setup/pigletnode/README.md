@@ -31,7 +31,8 @@ or [`../tdongle-c5/core.cfg`](../tdongle-c5/core.cfg).
 3. **Set Tools → Partition Scheme → Huge APP.** PigletNode is ~1.4 MB and
    overflows the default 1.25 MB partition at ~106%. This is the single most
    common failure flashing this firmware — it is a menu setting, not a code
-   problem.
+   problem. (Choosing the `XIAO_ESP32C5` board profile instead sidesteps it:
+   that profile's 3 MB app partition fits at 41% with no menu change.)
 4. Flash. It needs no SD card and no GPS.
 
 ## Bringing it into a cluster

@@ -26,7 +26,10 @@ Pick the entry matching your hardware: **XIAO_ESP32S3**, **XIAO_ESP32C5**,
 **Enable PSRAM** (Tools → PSRAM): *OPI PSRAM* on C5/C6, *QSPI PSRAM* on S3.
 HTTPS uploads to WiGLE need it.
 
-If the sketch overflows flash, set **Tools → Partition Scheme → Huge APP**.
+**The C6 and C3 need Tools → Partition Scheme → Huge APP.** At the default
+scheme they overflow (133% and 121%) and fail with *"text section exceeds
+available space"*. S3 and C5 fit at their defaults (44% / 54%). See the [build
+matrix](../README.md#verified-build-matrix).
 
 ## 3. Wire it up
 

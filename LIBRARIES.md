@@ -19,6 +19,12 @@ library — see the T-Dongle section in the README. On the C5 it needs
 `PIGLET_HAS_BLE` keys off the chip's `CONFIG_BT_ENABLED`, so the observer is
 built in and `bleEnabled` only gates it at runtime.)
 
+## Waveshare C6 port only
+
+| Library | Author | Notes |
+|---|---|---|
+| LovyanGFX | lovyan03 | ST7789 panel driver for `waveshareDisplayMiniPiglet/`. Not used by any other firmware; without it that sketch fails with `fatal error: LovyanGFX.hpp: No such file or directory`. |
+
 ## BLE wardriving (only for `bleEnabled=true` builds)
 
 | Library | Author | Version | Notes |

@@ -37,6 +37,38 @@ drive.
 3. Fill in `homeSsid` / `homePsk` and your `wigleBasicToken`.
 4. Insert the SD card, power on, watch the Serial monitor at 115200.
 
+## Verified build matrix
+
+Every target below was clean-built against **esp32 core 3.3.10**
+(2026-08-04). Percentages are program-storage use.
+
+| Firmware | Board target | Default partition | With Huge APP |
+|---|---|---|---|
+| Piglet | `XIAO_ESP32S3` | ✅ 44% | — |
+| Piglet | `XIAO_ESP32C5` | ✅ 54% | — |
+| Piglet | `XIAO_ESP32C6` | ❌ **133%** | ✅ 55% |
+| Piglet | `XIAO_ESP32C3` | ❌ **121%** | ✅ 50% |
+| T-Dongle C5 | `XIAO_ESP32C5` | ✅ 52% | — |
+| T-Dongle C5 | `ESP32C5 Dev Module` | ❌ **135%** | ✅ 56% |
+| PigletNode | `XIAO_ESP32C5` | ✅ 41% | — |
+| PigletNode | `ESP32C5 Dev Module` | ❌ **106%** | ✅ 44% |
+| Waveshare C6 | `ESP32C6 Dev Module` | ❌ **100%** | ✅ 42% |
+
+**Read that as: more than half of these need Tools → Partition Scheme →
+Huge APP.** The firmware has grown past the 1.25 MB app partition that most
+default schemes give you. The `XIAO_*` profiles are the exception — they map to
+larger layouts (3 MB app), which is why the T-Dongle guide tells you to pick
+`XIAO_ESP32C5` even though the dongle is not a XIAO.
+
+An overflow looks like:
+
+```
+Sketch uses 1749660 bytes (133%) of program storage space.
+Error during build: text section exceeds available space in board
+```
+
+That is a menu setting, not a code problem.
+
 ## Reference
 
 - [Config key reference](config-reference.md) — every key, defaults, which

@@ -38,8 +38,14 @@ Eight keys, and that is the whole set — anything else in the file is ignored:
 ## Setup
 
 1. esp32 core **v3.x**; libraries per [`LIBRARIES.md`](../../../LIBRARIES.md).
-   This port drives an ST7789 over SPI.
-2. Board: the Waveshare ESP32-C6 entry, or **ESP32C6 Dev Module**.
+   This port drives its ST7789 panel through **LovyanGFX**, which the other
+   firmwares do not use — install it or the build fails immediately with
+   `fatal error: LovyanGFX.hpp: No such file or directory`.
+2. Board: **ESP32C6 Dev Module**. There is no "Waveshare ESP32-C6 LCD 1.47"
+   entry in the esp32 core; the Waveshare boards it does list are different
+   hardware.
+   **Set Tools → Partition Scheme → Huge APP** — at the default scheme this
+   sketch lands at 100% and fails to link.
 3. Wire GPS and SD to the pins defined in the header comment at the top of the
    sketch — that block is the authoritative pinout for this port.
 4. Copy [`standalone.cfg`](standalone.cfg) to the SD root as `wardriver.cfg`,

@@ -46,6 +46,15 @@ static const uint32_t LONG_PRESS_MS = 2000;
 static void enterDeepSleep() {
   Serial.println("[SLEEP] Long press detected – entering deep sleep...");
 
+  // Every wake path below is a button press, so a board with no button
+  // (XIAO C3, btn=-1) has no way back out — and 1ULL << -1 is undefined
+  // behaviour on top of that. Refuse rather than strand the device until it
+  // gets power-cycled.
+  if (pins.btn < 0) {
+    Serial.println("[SLEEP] No button on this board — sleep would be unwakeable. Ignoring.");
+    return;
+  }
+
   // Flush & close the active CSV log
   closeLogFile();
 
@@ -62,12 +71,16 @@ static void enterDeepSleep() {
   display.display();
   delay(600);
 
-  // Configure wake source (button press = LOW on INPUT_PULLUP)
+  // Configure wake source (button press = LOW on INPUT_PULLUP).
+  // C3 belongs with C6/C5: the RISC-V parts have no ext0 wake source, so
+  // esp_sleep_enable_ext0_wakeup() is not even declared for them — building for
+  // a C3 used to fail here on the #else fallback.
   #if defined(CONFIG_IDF_TARGET_ESP32S3)
     rtc_gpio_pullup_en((gpio_num_t)pins.btn);
     rtc_gpio_pulldown_dis((gpio_num_t)pins.btn);
     esp_sleep_enable_ext0_wakeup((gpio_num_t)pins.btn, 0);  // wake on LOW
-  #elif defined(CONFIG_IDF_TARGET_ESP32C6) || defined(CONFIG_IDF_TARGET_ESP32C5)
+  #elif defined(CONFIG_IDF_TARGET_ESP32C6) || defined(CONFIG_IDF_TARGET_ESP32C5) || \
+        defined(CONFIG_IDF_TARGET_ESP32C3)
     esp_deep_sleep_enable_gpio_wakeup(1ULL << pins.btn, ESP_GPIO_WAKEUP_GPIO_LOW);
   #else
     esp_sleep_enable_ext0_wakeup((gpio_num_t)pins.btn, 0);  // fallback
