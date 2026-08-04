@@ -896,7 +896,8 @@ void nodeModeTick() {
   // window we return the radio to ch 6 before forwarding to the Core.
   bool bleWindowActive = false;
   // role gate: a WiFi-only node never opens a BLE window. (BLE still requires
-  // local bleEnabled to have initialised the NimBLE stack — see cluster-node.cfg.)
+  // local bleEnabled to have initialised the NimBLE stack — see
+  // docs/setup/piglet-xiao/node.cfg.)
   if (jcmkHaveCore && cfg.bleEnabled && jcmkRole != NODE_ROLE_WIFI && bleScanner.ready()) {
     static uint32_t lastNodeBleMs = 0;
     if (!bleScanner.isScanning() && !nodeScanActive &&

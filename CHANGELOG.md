@@ -2,7 +2,33 @@
 
 ## Unreleased
 
-### Docs
+### Docs — setup guides reorganised
+
+All example configs and setup instructions now live under **`docs/setup/`**, one
+folder per firmware, each with a step-by-step README and a ready-to-copy `.cfg`
+for every role that board supports:
+
+| Folder | Board | Configs |
+|---|---|---|
+| `docs/setup/piglet-xiao/` | XIAO S3 / C5 / C6 / C3 | standalone, core, node |
+| `docs/setup/tdongle-c5/` | LilyGo T-Dongle C5 | standalone, core, node |
+| `docs/setup/pigletnode/` | XIAO C5 node build | none — documents why |
+| `docs/setup/waveshare-c6/` | Waveshare C6 LCD 1.47" | standalone |
+
+Plus `docs/setup/README.md` (pick a board and role) and
+`docs/setup/config-reference.md` (every key, default, and per-firmware support
+matrix — the Waveshare port turns out to understand only 8 of ~26 keys).
+
+The four scattered samples they replace are gone: `docs/cluster-core.cfg`,
+`docs/cluster-node.cfg`, `Arduino Files/Piglet/wardriver.cfg` and
+`TDongleC5_Piglet/wardriver.cfg`. Two source comments pointing at the old paths
+were repointed.
+
+**README trimmed 665 → ~320 lines.** It keeps what it is good at — features,
+supported hardware, wiring/pinouts, cases, PCB, button and page reference — and
+hands off configuration, per-board flashing and cluster setup to `docs/setup/`.
+
+### Docs — corrections
 
 - **README: corrected the T-Dongle board target.** It said to select
   `ESP32C5 Dev Module`, whose default partition gives a 1.25 MB app — the
@@ -18,7 +44,7 @@
   and the admin length guard's **upper** bound is documented with the failure it
   prevents.
 - `LIBRARIES.md`: NimBLE is a compile-time requirement on the T-Dongle whatever
-  `bleEnabled` says. `docs/cluster-node.cfg`: notes for using a T-Dongle as node.
+  `bleEnabled` says.
 
 ### BLE wardriving on the T-Dongle C5
 

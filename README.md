@@ -35,187 +35,64 @@ Designed for **[Seeed XIAO ESP32-S3](https://wiki.seeedstudio.com/xiao_esp32s3_g
 - **PigletNode** — standalone minimal firmware for XIAO ESP32-C5 that boots directly as a mesh node (no display, GPS, or SD required), scanning Wi-Fi **and** BLE
 
 
-## ESP-Now Mesh Network Node Mode
+## Firmware variants
 
-Piglet includes a built-in **Mesh Node mode** that lets it act as a wireless wardriving node alongside a compatible coordinator device. In this mode, Piglet scans Wi-Fi networks and forwards results over ESP-Now — no SD card or GPS fix required on Piglet itself. The coordinator handles GPS stamping and data logging.
+Four firmwares live in this repo. They share the same `wardriver.cfg` format and
+the same WiGLE CSV output.
 
-### Compatible Coordinator Devices
+| Firmware | Board | Roles | BLE | Mesh | Setup guide |
+|---|---|---|:-:|:-:|---|
+| **Piglet** (`Arduino Files/Piglet/`) | XIAO S3 / C5 / C6 / C3 | standalone · core · node | opt-in | ✅ | [`docs/setup/piglet-xiao/`](docs/setup/piglet-xiao/) |
+| **T-Dongle C5** (`TDongleC5_Piglet/`) | LilyGo T-Dongle C5 | standalone · core · node | opt-in | ✅ | [`docs/setup/tdongle-c5/`](docs/setup/tdongle-c5/) |
+| **PigletNode** (`PigletNode/`) | XIAO ESP32-C5 | node only | always on | ✅ | [`docs/setup/pigletnode/`](docs/setup/pigletnode/) |
+| **Waveshare C6** (`waveshareDisplayMiniPiglet/`) | Waveshare C6 LCD 1.47" | standalone only | ❌ | ❌ | [`docs/setup/waveshare-c6/`](docs/setup/waveshare-c6/) |
 
-- **Biscuit Pro** by [Hedge / Biscuit Shop](https://biscuitshop.us)
-- **JCMK C5 Wardriver** by JustCallMeKoko
+## Setup
 
-### How to Use
+**→ [`docs/setup/`](docs/setup/) has step-by-step guides and ready-to-copy
+config files for every board and every role.**
 
-1. Power on your coordinator device (Biscuit Pro or JCMK C5 Wardriver)
-2. On Piglet, press the button to cycle pages until you reach **Mesh Node** (the last page after the pig animation)
-3. Piglet automatically searches for a coordinator on ESP-Now channel 6
-4. Once connected, it receives a channel range assignment and begins forwarding scan data
-5. Press the button again to exit Mesh Node mode and return to normal wardriving
+The short version: flash the firmware, copy the matching `.cfg` from your
+board's folder to the SD card root as `wardriver.cfg`, fill in your Wi-Fi and
+WiGLE token, power on.
 
-### Mesh Node Display
+- [Config key reference](docs/setup/config-reference.md) — every key, its
+  default, and which firmwares support it
+- [ESP-Now protocol](docs/PROTOCOL.md) — the Core↔Node wire format
+- [Libraries](LIBRARIES.md) — what to install
 
-While in Mesh Node mode the OLED shows:
-- Link status (Searching / Core linked)
-- Coordinator MAC address
-- Assigned channel range
-- Total networks discovered
-- Records forwarded to the coordinator
+### Running a mesh cluster
 
-> **Note:** Entering Mesh Node mode suspends normal WiGLE CSV logging. All data is sent live to the coordinator. Exiting the page restores normal scanning automatically.
+One **Core** plus up to four **Nodes**. Nodes scan Wi-Fi and/or BLE and forward
+everything over ESP-Now; the Core stamps it with *its* GPS and writes one
+combined CSV. Only the Core needs GPS and an SD card, so nodes can be bare
+boards. Each node can be dedicated to one radio (`wifi` / `ble` / `both`) from
+the Core's config, addressed by MAC.
 
-### Auto-Start Mesh Mode on Boot
+A Core deliberately does **not** scan BLE itself — it logs what its nodes send.
+For BLE from a single device, run that device standalone.
 
-Set `meshModeOnBoot` in `/wardriver.cfg` to automatically enter mesh mode after boot uploads are complete, without needing to navigate pages manually:
+Cores also interoperate with **Biscuit Pro** and **JCMK C5** coordinators for
+Wi-Fi, with [caveats](docs/setup/pigletnode/README.md#known-interop-limit).
 
-| Value | Behaviour |
-|-------|-----------|
-| `none` | Normal wardriving (default) |
-| `core` | Enters Mesh Core mode — acts as coordinator, logs records from nodes |
-| `node` | Enters Mesh Node mode — forwards scan results to a Core |
+Full walkthrough: [`docs/setup/piglet-xiao/README.md`](docs/setup/piglet-xiao/README.md#building-a-cluster).
 
-When `core` or `node` is set the SoftAP window is **skipped entirely** (ESP-Now owns the WiFi stack and the AP would be non-functional). The device goes straight from boot uploads to the mesh page. Set via the web UI **Mesh Mode On Boot** dropdown or directly in `/wardriver.cfg`.
+### Bluetooth LE wardriving
 
-### Assigning Node Scan Roles (Core SD config)
+Passive, observer-only BLE logged into the **same WiGLE-1.6 CSV** as Wi-Fi with
+`Type=BLE`, so one upload carries both. Opt in with `bleEnabled=true`
+(always on for PigletNode). Per device it records address + type, advertised
+name, RSSI, 16-bit service UUIDs, and manufacturer company ID — all GPS-stamped.
 
-By default every node scans **both** Wi-Fi and BLE. From the **Core's** `/wardriver.cfg` you can dedicate each node to a single radio — e.g. some nodes Wi-Fi-only and others BLE-only — addressed by the node's full MAC:
+Tuning and the Core/standalone distinction: [config
+reference](docs/setup/config-reference.md#ble).
 
-```
-nodeDefaultRole=both              # role for any node not listed (wifi | ble | both)
-node.A1B2C3D4E5F6=wifi            # this node: Wi-Fi only
-node.A1B2C3D4E5F7=ble             # this node: BLE only
-```
+### Filtering what gets logged
 
-The role is delivered to each node over the existing mesh link (it rides the channel-assignment frame), so **no node-side config is needed** — a PigletNode honors any role directly. To discover a node's MAC, watch the Core's **Serial** output: when a node joins, the Core prints its full MAC and a ready-to-paste `node.<mac>=...` line. The Core's OLED mesh page also shows a per-node role glyph (`W` / `B` / `2`).
-
-Notes: a main-sketch or T-Dongle C5 node must also keep its own `bleEnabled=true` to honor a `ble`/`both` role (a `bleEnabled=false` node can only do Wi-Fi). Role edits are read once at boot — **reboot the Core** to apply. Old/3rd-party JCMK cores that don't send roles leave every node at `both`.
-
-
-### Blacklisting networks/devices from the save file
-
-Keep specific networks or devices out of the CSV entirely — e.g. your own home Wi-Fi or personal phones — with one entry per line in `wardriver.cfg`. MACs accept colons or bare 12-hex, and an inline `# label` is kept so the file documents itself:
-
-```
-blacklistMac=AA:BB:CC:DD:EE:FF    # My phone
-blacklistMac=112233445566         # Home router
-blacklistSsid=MyHomeNet           # Home network
-blacklistSsid=iPhone              # phone BLE name
-```
-
-Matching is **exact** — a MAC matches on the full address, an SSID/BLE-name on the whole string (case-insensitive); there are no wildcards, so `MyHomeNet` does not filter `MyHomeNet2`. The `blacklistSsid` list also matches BLE device names. Up to 16 entries of each. The filter runs at CSV write time, so on a **Core** it drops both locally-scanned and mesh-forwarded node observations. Reboot to apply edits.
-
-### Log-once dedup
-
-By default Piglet logs each Wi-Fi BSSID and each BLE MAC **once per boot** — repeat sightings of the same device are suppressed so the CSV stays compact and (on a Core) the mesh isn't flooded. The ring holding recently-seen addresses is capped by `bleMaxResults`.
-
-Turn it off with a single global switch in `wardriver.cfg` when you want **every** sighting written — e.g. for dwell-time analysis, RSSI-over-time, or debugging:
-
-```
-dedupEnabled=true     # default: each MAC/BSSID logged once
-dedupEnabled=false    # log every sighting
-```
-
-This covers both Wi-Fi and BLE on the main Piglet firmware and on the T-Dongle C5 firmware (the Core / single-device setup). Blacklisting always runs first, so blacklisted devices are dropped regardless of this setting. The dedicated PigletNode firmware keeps its own log-once forwarding and is not affected by this flag. Reboot to apply.
-
-
-## Bluetooth LE Wardriving
-
-Piglet can passively scan for Bluetooth LE devices alongside Wi-Fi and log them to the **same WiGLE-1.6 CSV** with `Type=BLE` — so a single upload to WiGLE or WDGoWars carries both Wi-Fi and BLE observations.
-
-- **Opt-in** on the main firmware and on the **T-Dongle C5** firmware: set `bleEnabled=true` in `wardriver.cfg` (config block below). Off by default — no flash/RAM cost when disabled.
-- **Always on** in the dedicated PigletNode firmware (see below).
-- **What's logged per device:** address + type (`[LE Public]` / `[LE Random]` / `[LE Resolvable]` / `[LE NonResolvable]`), advertised name, RSSI, 16-bit service UUIDs (in the RCOIs column, e.g. `FE9F;180F`), and the manufacturer company ID (MfgrId) — all GPS-stamped like Wi-Fi rows.
-- **In a mesh cluster:** each Node scans Wi-Fi and/or BLE (per its [assigned role](#assigning-node-scan-roles-core-sd-config), default both) and forwards observations to the Core, which stamps them with its own GPS and logs them. Nodes need no GPS or SD. Log-once dedupe keeps a device from flooding the log and the mesh.
-- **On the OLED:** the Status and Networks pages show a live BLE count; the mesh page shows BLE received (Core) and forwarded (Node).
-- **Library:** requires **NimBLE-Arduino 2.1.x** for any BLE build. See [`LIBRARIES.md`](LIBRARIES.md).
-
-Tuning knobs in `wardriver.cfg`: `bleScanDuration` (window length), `bleScanInterval` (time between windows), `bleMaxResults` (memory cap), `dedupEnabled` (log-once on/off — see [Log-once dedup](#log-once-dedup)). The mesh wire format is documented in [`docs/PROTOCOL.md`](docs/PROTOCOL.md).
-
-
-## PigletNode — Standalone Mesh Node
-
-A minimal, standalone firmware for the **Seeed XIAO ESP32-C5** in the `PigletNode/` folder. No display, GPS, or SD card required — flash it and it automatically pairs with any Piglet running in Core mode and begins scanning.
-
-- Single-file Arduino sketch (plus the bundled `Ble*.h` headers for BLE)
-- Boots directly into JCMK-compatible ESP-Now node mode
-- Dual-band Wi-Fi scanning: 40 channels (2.4 GHz ch 1–14 + 5 GHz UNII-1/2/2e/3)
-- **Always-on BLE scanning** — forwards Bluetooth LE observations to the Core
-  over ESP-Now alongside Wi-Fi (the Core geotags and logs them)
-- Auto-pairs with Piglet Core mode (XIAO or T-Dongle)
-- 30-second Core timeout with automatic re-search
-- LED: fast blink = searching, slow blink = paired and scanning
-- Hold BOOT button > 2 s to force a re-search
-
-**Flash:** Open `PigletNode/PigletNode.ino` in Arduino IDE, select **XIAO_ESP32C5**, upload. Requires the **NimBLE-Arduino 2.1.x** library (for BLE).
-
-
-## T-Dongle C5 Variant
-
-A standalone firmware port is available for the **LilyGo T-Dongle C5** in the `TDongleC5_Piglet/` folder. This variant is a self-contained single-file sketch with its own display driver, LED control, and web UI — no external OLED required.
-
-**Hardware:** LilyGo T-Dongle C5 (ESP32-C5, built-in ST7735 0.96" TFT, APA102 LED, TF card slot)
-
-**Additional GPS:** Connect any UART GPS module via the Qwiic/JST connector (RX=GPIO12, TX=GPIO11)
-
-**Pages:** Status · Networks · Navigation · Pig animation · Mesh Node
-
-**BLE wardriving:** Supported, opt-in via `bleEnabled=true` in `/wardriver.cfg`
-(reboot to apply). Standalone, the dongle scans BLE alongside Wi-Fi and writes
-`Type=BLE` rows to the same CSV. As a mesh **Node** it forwards observations to
-the Core; as a **Core** it logs what its nodes forward and does not scan BLE
-itself — the same split as the XIAO firmware. Scanning is observer-only and
-never transmits. Requires the **NimBLE-Arduino** library (see below).
-
-> **Note:** `bleEnabled` defaults to `false`, and a dongle running as a mesh
-> **Core** never scans BLE locally by design. So to actually collect BLE on a
-> standalone dongle you need *both* `bleEnabled=true` **and**
-> `meshModeOnBoot=none` (or `node`). Setting only `bleEnabled=true` on a
-> Core-mode dongle changes nothing.
-
-### T-Dongle C5 config keys
-
-The dongle reads the same `/wardriver.cfg` as the XIAO firmware and supports
-nearly all of the same keys. Differences, all down to hardware:
-
-| Key | T-Dongle | Notes |
-|---|---|---|
-| `bleEnabled`, `bleScanDuration`, `bleScanInterval` | ✅ | BLE wardriving (above) |
-| `dedupEnabled`, `bleMaxResults` | ✅ | [Log-once dedup](#log-once-dedup) |
-| `autoStartAfterUpload` | ✅ | Also in the web UI Config panel |
-| `nodeDefaultRole`, `node.<MAC>=…` | ✅ | [Node scan roles](#assigning-node-scan-roles-core-sd-config) |
-| `blacklistMac`, `blacklistSsid` | ✅ | [Blacklisting](#blacklisting-networksdevices-from-the-save-file) |
-| `meshModeOnBoot`, `rotateScreen180`, `deviceName`, `gpsBaud`, `scanMode`, `speedUnits`, `maxBootUploads`, WiGLE/WDGoWars/Wi-Fi keys | ✅ | Same as XIAO |
-| `board` | ❌ | Fixed pinmap — the dongle is one known board |
-| `battPin`, `batteryTest` | ❌ | No battery on a USB dongle |
-
-Keys the dongle doesn't recognise are ignored, so a config file shared with a
-XIAO works on both.
-
-### T-Dongle C5 Required Libraries
-
-Install via Arduino Library Manager (`Sketch → Include Library → Manage Libraries`):
-
-| Library | Author |
-|---------|--------|
-| Adafruit ST7735 and ST7789 Library | Adafruit |
-| Adafruit GFX Library | Adafruit |
-| Adafruit BusIO | Adafruit |
-| TinyGPSPlus | Mikal Hart |
-| ArduinoJson | Benoit Blanchon |
-| NimBLE-Arduino | h2zero |
-
-All networking, SPI, SD, ESP-Now, and ESP-IDF headers are included in the ESP32 Arduino core — no separate install needed.
-
-**Board setup:** Add `https://espressif.github.io/arduino-esp32/package_esp32_dev_index.json` to Additional Boards Manager URLs and install **esp32 by Espressif v3.x** (not 4.x — see [`LIBRARIES.md`](LIBRARIES.md)).
-
-> **Select `XIAO_ESP32C5` as the board, not `ESP32C5 Dev Module`.** The dongle is
-> not a XIAO, but that board profile is the one that fits: it uses an 8 MB layout
-> with a **3 MB app partition**, while `ESP32C5 Dev Module` defaults to a 4 MB
-> layout with only a **1.25 MB** app partition — the firmware is ~1.75 MB with
-> BLE enabled and will fail to link with *"text section exceeds available space"*.
-> If you prefer `ESP32C5 Dev Module`, set **Tools → Partition Scheme → Huge APP**.
-> Verified against a real T-Dongle C5: ESP32-C5 rev v1.0, 16 MB flash — writing
-> the 8 MB layout to it is fine, the remaining flash is simply unused.
-
+Piglet logs each BSSID and BLE MAC **once per boot** by default, keeping CSVs
+compact, and can drop chosen networks entirely (your own home Wi-Fi, your
+phone). Both are configured per device — see
+[filtering](docs/setup/config-reference.md#filtering).
 
 ## Supported Hardware
 
@@ -341,212 +218,26 @@ Piglet includes custom PCB designs for compact, production-ready builds. KiCad p
 **Assembly Note:** When stacking modules, apply **Kapton tape** between components to prevent electrical shorts. Pay special attention to exposed pins and solder joints that may contact adjacent modules.
 
 
-## First Time Run Initialization
+## Configuration
 
-The Wardriver functions using a config file located on the root of a FAT32-formatted SD card. On first boot the device will start its own access point (`Piglet-WARDRIVE` / `wardrive1234`) so you can connect and fill in your settings via the web interface — or you can place the config file on the SD card manually before powering on.
+Configuration is a plain-text `/wardriver.cfg` at the root of the SD card. If
+none exists, the firmware boots with defaults and writes one you can edit.
 
-**AP Timer & Keep-Alive**
+**→ Ready-to-copy examples for every board and role: [`docs/setup/`](docs/setup/)**
 
-The SoftAP runs for **60 seconds** by default. About **30 seconds before** that window expires, the WebUI shows a *"Stay in WebUI?"* prompt — clicking **Stay** extends the window to a **5 minute** rolling timer so you have room to actually use the WebUI. The same prompt re-appears 30 seconds before the 5 minute timer expires; clicking Stay again resets it.
+**→ Every key, default, and per-firmware support: [config
+reference](docs/setup/config-reference.md)**
 
-- **Stay** — extends (or re-extends) the window to 5 minutes.
-- **Start Scanning Now** — closes the AP immediately and begins wardriving.
-- **Ignored / browser closed** — timer runs out, AP closes, scanning starts.
+Most settings are also editable from the web UI — connect to the Wardriver AP
+(`http://192.168.4.1`) or reach the device on your home network, and use the
+**Config** panel. A few (node roles, blacklist, dedup) are SD-config-only by
+design.
 
-The OLED shows the live countdown (`AP: 192.168.4.1 60s` initially, `m:ss` once extended). Once your home Wi-Fi is configured, the device will connect to it on subsequent boots and the WebUI is reachable on the STA IP shown on the OLED — the AP only comes up if STA fails.
-
-**Location:** `/wardriver.cfg` on the SD card root
-
-A sample config file is included in `Arduino Files/Piglet/wardriver.cfg`. The full default config with all available keys is shown below:
-
-```ini
-# ============================================================
-# Piglet Wardriver Configuration
-# Format: key=value
-# Lines starting with # are comments and ignored.
-# ============================================================
-
-# ------------------------------------------------------------
-# WiGLE Upload
-# ------------------------------------------------------------
-# Use only the "Encoded for Use" token from wigle.net/account
-# Leave empty to disable WiGLE uploads.
-
-wigleBasicToken=EnterWigleTokenHere
-
-# ------------------------------------------------------------
-# WDGoWars
-# ------------------------------------------------------------
-# Get your API key at: https://wdgwars.pl/profile/
-# Leave empty to disable WDGoWars uploads.
-
-wdgwarsApiKey=EnterWDGoWarsAPIKeyHere
-
-# ------------------------------------------------------------
-# Max Automatic Uploads at Boot
-# ------------------------------------------------------------
-# -1 = Upload ALL pending files every boot
-#  0 = Disabled — no auto-upload at boot (use web UI manually)
-# 1+ = Upload up to N files per boot
-
-maxBootUploads=-1
-
-# ------------------------------------------------------------
-# Home Wi-Fi (STA mode)
-# ------------------------------------------------------------
-# If provided, device connects on boot.
-# If connection fails, falls back to SoftAP for 60 seconds
-# (can be extended via the "Stay in WebUI?" prompt that appears
-# ~30 s before the timer expires).
-
-homeSsid=EnterWifiHere
-homePsk=EnterWifiPasswordHere
-
-# ------------------------------------------------------------
-# Wardriver Access Point (SoftAP fallback)
-# ------------------------------------------------------------
-# SSID and password for the temporary config AP.
-# Password must be 8+ characters or AP becomes open.
-
-wardriverSsid=Piglet-WARDRIVE
-wardriverPsk=wardrive1234
-
-# ------------------------------------------------------------
-# GPS Settings
-# ------------------------------------------------------------
-# UART baud rate for the GPS module.
-# Common values: 9600, 38400, 115200
-
-gpsBaud=9600
-
-# ------------------------------------------------------------
-# Wi-Fi Scan Mode
-# ------------------------------------------------------------
-# aggressive  — scans every ~3 seconds using async mode (faster, more power)
-# powersaving — scans every ~12 seconds (slower, less power)
-
-scanMode=aggressive
-
-# ------------------------------------------------------------
-# Speed Units (display only)
-# ------------------------------------------------------------
-# kmh = kilometers per hour
-# mph = miles per hour
-
-speedUnits=mph
-
-# ------------------------------------------------------------
-# Battery Test
-# ------------------------------------------------------------
-# true = logs elapsed time on battery to /battery_test.csv
-# false = disabled
-
-batteryTest=false
-
-# ------------------------------------------------------------
-# Device Name (optional)
-# ------------------------------------------------------------
-# A short label for this device. Used in WiGLE CSV filenames
-# and in the WiGLE upload header so you can tell devices apart.
-# Spaces become underscores. Max 20 characters.
-# Leave empty to use the default (no prefix).
-
-deviceName=
-
-# ------------------------------------------------------------
-# Board Type
-# ------------------------------------------------------------
-# Overrides automatic chip detection for pin mapping.
-# auto = detect from chip model (default)
-# s3   = XIAO ESP32-S3
-# c5   = XIAO ESP32-C5 (required for 5 GHz scanning)
-# c6   = XIAO ESP32-C6
-# exp  = XIAO ESP32-S3 + Expansion Base
-# Reboot required after changing.
-
-board=auto
-
-# ------------------------------------------------------------
-# Mesh Mode On Boot
-# ------------------------------------------------------------
-# Automatically enter ESP-Now mesh mode after boot uploads complete.
-# Bypasses the SoftAP window and jumps directly to the mesh page.
-#
-#   none = Normal wardriving mode (default)
-#   core = Start as Mesh Core (coordinator) — logs data from nodes
-#   node = Start as Mesh Node — forwards scan results to a Core
-#
-# Requires a compatible coordinator (Biscuit Pro, JCMK C5 Wardriver)
-# when using node mode.
-
-meshModeOnBoot=none
-
-# ------------------------------------------------------------
-# Screen Rotation
-# ------------------------------------------------------------
-# Rotate the display 180 degrees for upside-down mounting.
-# Values: true or false
-# Reboot required after changing.
-
-rotateScreen180=false
-
-# ------------------------------------------------------------
-# Auto-Start Wardriving After Uploads
-# ------------------------------------------------------------
-# When true: disconnects from home Wi-Fi immediately after boot uploads
-# complete and begins wardriving without delay. The web UI remains
-# accessible if you later connect to the Wardriver AP, but the device
-# will not hold the STA link open.
-# Values: true or false
-# Reboot required after changing.
-
-autoStartAfterUpload=false
-
-# ------------------------------------------------------------
-# BLE Wardriving (optional)
-# ------------------------------------------------------------
-# Passively scan for Bluetooth LE devices alongside Wi-Fi and log them to the
-# same CSV with Type=BLE (WiGLE-1.6). Requires the NimBLE-Arduino library (see
-# Libraries below) and a reboot when changing bleEnabled. In mesh mode, Nodes
-# forward BLE observations to the Core, which logs them with its own GPS.
-
-bleEnabled=false
-bleScanDuration=5      # BLE scan-window length, seconds (1-10)
-bleScanInterval=30     # seconds between windows (forced >= duration + 5)
-bleMaxResults=200      # log-once dedupe ring + queue cap (100-2000)
-dedupEnabled=true      # log each MAC/BSSID once (false = log every sighting)
-
-# ------------------------------------------------------------
-# Save-file blacklist — never written to the CSV (exact match, up to 16 each)
-# One entry per line; MACs accept colons or bare 12-hex; inline '# label' kept.
-# ------------------------------------------------------------
-# blacklistMac=AA:BB:CC:DD:EE:FF    # My phone
-# blacklistSsid=MyHomeNet           # Home network
-```
-
-### Auto-Start Wardriving After Uploads — How to Disable
-
-> **Important:** When `autoStartAfterUpload=true`, the device disconnects from your home Wi-Fi immediately after uploads finish and goes straight into wardriving. Because it no longer holds the STA connection, the web UI is **not** reachable on your home network after boot.
-
-To disable this setting after it has been enabled, you have two options:
-
-**Option 1 — Connect via the Wardriver AP**
-
-When Piglet is away from the saved home network (or the home network is unavailable), it falls back to its own SoftAP. Connect to it and use the web UI:
-
-1. Power on the device somewhere the home Wi-Fi is not in range (or temporarily forget the home network on the device by clearing `homeSsid` in the config)
-2. Connect your phone or laptop to the **Wardriver SSID** (default: `Piglet-WARDRIVE` / `wardrive1234`)
-3. Open a browser and go to **`http://192.168.4.1`**
-4. In the **Configuration** section, set **Auto-Start Wardriving After Uploads** to **Disabled**
-5. Click **Save & Reboot**
-
-**Option 2 — Edit the SD card directly**
-
-1. Remove the SD card from the device
-2. Open `wardriver.cfg` in any text editor
-3. Change `autoStartAfterUpload=true` to `autoStartAfterUpload=false`
-4. Save the file, re-insert the SD card, and reboot
-
+> **`autoStartAfterUpload=true` hides the web UI.** The device drops the home
+> Wi-Fi link straight after uploading, so it is no longer reachable on your home
+> network. To undo it: power on away from home so the Wardriver AP comes up and
+> browse to `http://192.168.4.1`, or pull the SD card and set
+> `autoStartAfterUpload=false` directly.
 
 ## Button Functions
 
@@ -587,62 +278,26 @@ Hold the button for **2 seconds** from any page:
 
 ### Mesh Node Page
 
-Entering **page 5** automatically starts ESP-Now node mode. Leaving it (single press to advance) automatically restores normal wardriving. See the [ESP-Now Mesh Network Node Mode](#esp-now-mesh-network-node-mode) section above for details.
+Entering **page 5** automatically starts ESP-Now node mode. Leaving it (single press to advance) automatically restores normal wardriving. See [Running a mesh cluster](#running-a-mesh-cluster) above, or the full walkthrough in [`docs/setup/`](docs/setup/).
 
 ## Building Firmware
 
 ### Requirements
 
-- **Arduino IDE 2.x** or **PlatformIO**
-- **Arduino-ESP32 core** v3.0.0 or later
+- Arduino IDE 2.x
+- **esp32 by Espressif core v3.x** — core 4.x does not build this firmware
+- Libraries per [`LIBRARIES.md`](LIBRARIES.md) (NimBLE-Arduino must be **2.x**)
 
-### Required Libraries — XIAO Variant (S3 / C5 / C6)
-
-Install via Arduino Library Manager (`Sketch → Include Library → Manage Libraries`):
-
-| Library | Author | Notes |
-|---------|--------|-------|
-| TinyGPSPlus | Mikal Hart | GPS NMEA parsing |
-| Adafruit GFX Library | Adafruit | Graphics dependency |
-| Adafruit SSD1306 | Adafruit | OLED display driver |
-| Adafruit BusIO | Adafruit | Required by SSD1306 |
-| ArduinoJson | Benoit Blanchon | v6.x or v7.x |
-| NimBLE-Arduino | h2zero | **v2.1.x** — only for BLE builds (`bleEnabled=true` or PigletNode) |
-
-All other headers (`WiFi`, `WebServer`, `WiFiClientSecure`, `HTTPClient`, `SD`, `SPI`, `Wire`, `esp_now.h`, `esp_wifi.h`) are included in the ESP32 Arduino core — no separate install needed.
-
-### Required Libraries — T-Dongle C5 Variant
-
-Install via Arduino Library Manager:
-
-| Library | Author | Notes |
-|---------|--------|-------|
-| Adafruit ST7735 and ST7789 Library | Adafruit | TFT display driver |
-| Adafruit GFX Library | Adafruit | Graphics dependency |
-| Adafruit BusIO | Adafruit | Required by ST7735 |
-| TinyGPSPlus | Mikal Hart | GPS NMEA parsing |
-| ArduinoJson | Benoit Blanchon | v6.x or v7.x |
-| NimBLE-Arduino | h2zero | v2.x — BLE wardriving (`bleEnabled`) |
-
-All networking, SPI, SD, ESP-Now, and ESP-IDF headers are built into the ESP32 core.
-
-### Flash Steps
-
-1. Select the correct **XIAO ESP32 board** variant (S3, C5, or C6)
-2. **CRITICAL:** Enable **PSRAM** (required for TLS/HTTPS uploads)
-   - Tools → PSRAM → **OPI PSRAM** (C5/C6) or **QSPI PSRAM** (S3)
-3. Use a **large app partition scheme** → **Huge APP (3MB No OTA/1MB SPIFFS)**
-4. Upload firmware  
-5. Insert **FAT32-formatted SD card**  
-6. Add `/wardriver.cfg` to SD card root with your WiGLE API key and WiFi credentials
-7. Restart device with RST button or power cycle
+Board selection, partition scheme, and PSRAM settings differ per variant and are
+the most common cause of a failed build. Each [setup
+guide](docs/setup/) states the exact target for its board — notably the T-Dongle
+C5, which needs `XIAO_ESP32C5` rather than the obvious `ESP32C5 Dev Module`.
 
 ### Where to Order
 
 I always order everything from JLCPCB because i get the best deals.  However i do understand that people prefer the all in one project offers of PCBway so i have created this project here:
 
 [PCBWayProjects](https://www.pcbway.com/project/shareproject/Piglet_Opensource_Wardriving_Project_1a21b94b.html)
-
 
 
 ## License

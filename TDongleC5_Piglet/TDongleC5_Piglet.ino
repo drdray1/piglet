@@ -2974,7 +2974,7 @@ static void nodeModeTick() {
   // to the admin channel before forwarding. One radio serves Wi-Fi hop +
   // ESP-Now + BLE, so these must not overlap.
   // Role gate: a Wi-Fi-only node never opens a window. BLE still requires local
-  // bleEnabled to have initialised NimBLE — see docs/cluster-node.cfg.
+  // bleEnabled to have initialised NimBLE — see docs/setup/tdongle-c5/node.cfg.
   bool bleWindowActive = false;
   if (jcmkHaveCore && cfg.bleEnabled && bleInited && jcmkRole != NODE_ROLE_WIFI) {
     static uint32_t lastNodeBleMs = 0;
