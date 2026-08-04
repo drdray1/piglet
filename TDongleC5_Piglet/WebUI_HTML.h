@@ -109,6 +109,12 @@ static const char INDEX_HTML[] PROGMEM = R"HTML(
       <div><label>Max Boot Uploads (-1=all, 0=off)</label><input id="maxBootUploads" type="number" value="25" min="-1"></div>
       <div><label>Mesh Mode On Boot</label><select id="meshModeOnBoot"><option value="none">None</option><option value="core">Core</option><option value="node">Node</option></select></div>
       <div><label>Rotate Screen 180&deg; (requires reboot)</label><select id="rotateScreen180"><option value="false">Normal</option><option value="true">Rotated 180&deg;</option></select></div>
+      <div><label>Auto-Start Wardriving After Uploads (requires reboot)</label>
+        <select id="autoStartAfterUpload">
+          <option value="false">Disabled &mdash; Stay on Home Wi-Fi (default)</option>
+          <option value="true">Enabled &mdash; Disconnect and Wardrive Immediately</option>
+        </select>
+      </div>
     </div>
     <div class="row mt-md">
       <button class="btn-primary" onclick="saveCfg()">Save Config</button>
@@ -171,7 +177,7 @@ async function loadStatus(){try{
   setText('vApSeen',j.apClientsSeen?'Yes':'No');
   const lu=j.uploadLastResult?j.uploadLastResult+' (HTTP '+(j.wigleLastHttpCode||'\u2014')+')':'\u2014';
   setText('vLastUpload',lu);
-  for(const k of ['wigleBasicToken','wdgwarsApiKey','deviceName','gpsBaud','homeSsid','wardriverSsid','wardriverPsk','scanMode','speedUnits','maxBootUploads','meshModeOnBoot','rotateScreen180']){
+  for(const k of ['wigleBasicToken','wdgwarsApiKey','deviceName','gpsBaud','homeSsid','wardriverSsid','wardriverPsk','scanMode','speedUnits','maxBootUploads','meshModeOnBoot','rotateScreen180','autoStartAfterUpload']){
     if(j.config&&(k in j.config)){const v=String(j.config[k]);if(maskedKeys.has(k)&&(v===''||v==='(set)'))continue;const el=$(k);if(el)el.value=v}}
 }catch(e){console.error(e)}}
 
@@ -219,7 +225,7 @@ async function deleteAllLogs(){
 }
 
 async function doSave(){
-  const keys=['wigleBasicToken','wdgwarsApiKey','deviceName','gpsBaud','homeSsid','homePsk','wardriverSsid','wardriverPsk','scanMode','speedUnits','maxBootUploads','meshModeOnBoot','rotateScreen180'];
+  const keys=['wigleBasicToken','wdgwarsApiKey','deviceName','gpsBaud','homeSsid','homePsk','wardriverSsid','wardriverPsk','scanMode','speedUnits','maxBootUploads','meshModeOnBoot','rotateScreen180','autoStartAfterUpload'];
   let body='# Saved from Web UI\n';
   for(const k of keys){const el=$(k);const v=el?(el.value??''):'';if(maskedKeys.has(k)&&v==='')continue;body+=k+'='+String(v).replace(/\r?\n/g,' ')+'\n'}
   await fetch('/saveConfig',{method:'POST',headers:{'Content-Type':'text/plain'},body});

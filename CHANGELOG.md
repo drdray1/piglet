@@ -8,9 +8,16 @@
   upstream in v2.57 for the XIAO sketch only. Same semantics: once boot uploads
   finish, the STA link is dropped and wardriving starts immediately instead of
   waiting for the connection to time out. Skipped when `meshModeOnBoot` is set
-  (mesh tears STA down itself). Settable via `/wardriver.cfg` or `POST /saveConfig`,
-  and reported in `status.json`; the T-Dongle web page has no config form, so
-  there is no dropdown to add. Defaults to `false` — no behaviour change unless enabled.
+  (mesh tears STA down itself). Settable from the web UI Config panel, from
+  `/wardriver.cfg`, or via `POST /saveConfig`, and reported in `status.json`.
+  Defaults to `false` — no behaviour change unless enabled.
+- **`dedupEnabled` / `bleMaxResults` added to the T-Dongle firmware** — log-once
+  dedup was previously hard-wired on with a fixed 200-entry ring, so unlike the
+  XIAO there was no way to turn it off or resize it. Both rings are now gated:
+  the CSV write path and the node-side forwarding ring (the node must not swallow
+  repeats before they reach the Core when dedup is off). SD-config-only, matching
+  the XIAO, which exposes neither in its web UI. Defaults (`true` / `200`)
+  reproduce the previous behaviour exactly.
 - **GPS last-known-position cache now covers every log path.** Upstream's v2.58
   cache was applied only to the Wi-Fi scan path, so Core-logged rows —
   `coreParseAndLogText()` (mesh-forwarded Wi-Fi) and `coreLogBleObs()`
@@ -22,6 +29,12 @@
 
 All three sketches verified to compile against ESP32 core 3.3.10
 (PigletNode needs a `huge_app` partition scheme; it overflows the default).
+
+Remaining T-Dongle differences from the XIAO firmware, all deliberate:
+`battPin`/`batteryTest` (no battery on the dongle), `board` (fixed pinmap), and
+the `ble*` scan keys — the T-Dongle logs mesh-forwarded BLE from nodes but has
+no local BLE scanner of its own, so `bleEnabled` and friends have nothing to
+drive. Porting the scanner is a separate piece of work.
 
 ### BLE wardriving (opt-in via `bleEnabled`)
 

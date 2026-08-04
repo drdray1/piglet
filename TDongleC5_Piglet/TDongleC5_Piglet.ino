@@ -159,6 +159,12 @@ struct Config {
   // The web UI is still reachable if you connect to the Wardriver AP later,
   // but the device will not hold the STA link open. Requires reboot.
   bool autoStartAfterUpload = false;
+  // Log-once dedup master switch. true = each MAC/BSSID logged once per boot;
+  // false = log every sighting. Matches the XIAO firmware's cfg.dedupEnabled.
+  bool     dedupEnabled = true;
+  // Cap on the log-once dedup rings (memory knob). 100-2000; default 200
+  // matches the upstream JCMK/Biscuit mac_history and the XIAO default.
+  uint16_t bleMaxResults = 200;
 
   // ---- Per-node scan roles (Core assigns each node a task by MAC) ----
   // Role for any node NOT listed in nodeRoles[]. (wifi | ble | both)
@@ -443,6 +449,8 @@ static void cfgAssignKV(const String& k, const String& v) {
   else if (k == "meshModeOnBoot") { String vv = v; vv.toLowerCase(); if (vv == "core" || vv == "node" || vv == "none") cfg.meshModeOnBoot = vv; }
   else if (k == "rotateScreen180") { String vv = v; vv.toLowerCase(); cfg.rotateScreen180 = (vv == "true" || vv == "1"); }
   else if (k == "autoStartAfterUpload") { String vv = v; vv.toLowerCase(); cfg.autoStartAfterUpload = (vv == "true" || vv == "1"); }
+  else if (k == "dedupEnabled") { String vv = v; vv.toLowerCase(); cfg.dedupEnabled = (vv == "true" || vv == "1"); }
+  else if (k == "bleMaxResults") { int n = v.toInt(); if (n >= 100 && n <= 2000) cfg.bleMaxResults = (uint16_t)n; }
   else if (k == "nodeDefaultRole") { uint8_t r; if (roleFromStr(v.c_str(), r)) cfg.nodeDefaultRole = r; }
   else if (k.startsWith("node.")) {
     // node.<12hex>=wifi|ble|both — per-node scan role addressed by full MAC.
@@ -490,6 +498,10 @@ static bool saveConfigToSD() {
   f.println("# true = wardrive right after uploads complete (headless mode).");
   f.println("# false = stay on home WiFi, keep web UI accessible (default).");
   f.print("autoStartAfterUpload="); f.println(cfg.autoStartAfterUpload ? "true" : "false");
+  f.println("# Log each MAC/BSSID once (true) or log every sighting (false).");
+  f.print("dedupEnabled=");    f.println(cfg.dedupEnabled ? "true" : "false");
+  f.println("# Log-once dedup ring cap (memory knob). 100-2000.");
+  f.print("bleMaxResults=");   f.println(cfg.bleMaxResults);
 
   f.flush(); f.close();
   Serial.println("[CFG] Saved OK");
@@ -699,8 +711,12 @@ static void appendWigleRow(const String& mac, const String& ssid, const String& 
   }
 
   // Log each BSSID once (covers solo + Core node-forwarded writes via one ring).
-  static WifiSeenRing gWigleSeen;
-  if (!gWigleSeen.firstTime(mac)) return;
+  // Skipped entirely when dedup is disabled, so every sighting is written.
+  // Constructed on first call, which is after loadConfigFromSD() in setup().
+  if (cfg.dedupEnabled) {
+    static WifiSeenRing gWigleSeen(cfg.bleMaxResults);
+    if (!gWigleSeen.firstTime(mac)) return;
+  }
 
   // Rotate CSV before it exceeds the WDGoWars 15 MB upload limit
   if (csvRowCount >= CSV_MAX_ROWS) {
@@ -2522,10 +2538,13 @@ static void nodeDoScanTick() {
     // Return to ch 6 before any ESP-Now send (JCMK sendBroadcastStringPlain pattern).
     // The scan left the radio on the scan channel; Core listens only on ch 6.
     jcmkSetChannel(JCMK_ESPNOW_CH);
-    static WifiSeenRing gFwdSeen;  // node-side: forward each BSSID once
+    // Node-side: forward each BSSID once. Also gated on dedupEnabled — with
+    // dedup off the Core is expected to log every sighting, so the node must
+    // not swallow repeats before they ever reach it.
+    static WifiSeenRing gFwdSeen(cfg.bleMaxResults);
     for (int i = 0; i < n; i++) {
       String bssid = WiFi.BSSIDstr(i);
-      if (!gFwdSeen.firstTime(bssid)) continue;  // already forwarded
+      if (cfg.dedupEnabled && !gFwdSeen.firstTime(bssid)) continue;  // already forwarded
       String ssid  = WiFi.SSID(i);
       String auth  = authModeToString(WiFi.encryptionType(i));
       int    ch    = WiFi.channel(i);
