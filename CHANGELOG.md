@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### Docs — build troubleshooting
+
+Added a **Build troubleshooting** section to the main README, covering the
+errors people actually hit, each with the error text they'd paste into a search:
+
+- **"Sketch too big" / "text section exceeds available space"** — the common one.
+  States plainly that it's a menu setting, gives both fixes (switch to a `XIAO_*`
+  board profile, or Partition Scheme → Huge APP), reproduces the per-target
+  matrix, and tells you how to confirm it took (`Maximum is 3342336` vs
+  `1310720`). Also records that shipping a `partitions.csv` would *not* help —
+  the IDE's size check reads `upload.maximum_size` from the board menu and never
+  recomputes it from a partition file.
+- `fatal error: LovyanGFX.hpp` — Waveshare-only dependency.
+- NimBLE link errors / undefined deep-sleep wakeup — you're on esp32 core 4.x.
+- Missing `NimBLEDevice.h` with `bleEnabled=false` — NimBLE is a compile-time
+  dependency on any BT-capable chip, not a runtime one.
+- T-Dongle builds but screen/SD/GPS dead — wrong sketch.
+
+Prompted by a real report: "Sketch too big" building the T-Dongle firmware,
+which was `ESP32C5 Dev Module`'s 1.25 MB default partition against a ~1.76 MB
+sketch.
+
 ### Build fixes
 
 - **XIAO ESP32-C3 did not compile at all.** Upstream's v2.58 added C3 support

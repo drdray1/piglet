@@ -67,7 +67,10 @@ Sketch uses 1749660 bytes (133%) of program storage space.
 Error during build: text section exceeds available space in board
 ```
 
-That is a menu setting, not a code problem.
+That is a menu setting, not a code problem. Confirm the fix took by checking the
+reported ceiling: you want `Maximum is 3342336 bytes`, not `Maximum is 1310720
+bytes`. Common build errors are collected in the [main README's troubleshooting
+section](../../README.md#build-troubleshooting).
 
 ## Reference
 

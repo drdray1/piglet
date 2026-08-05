@@ -293,6 +293,64 @@ the most common cause of a failed build. Each [setup
 guide](docs/setup/) states the exact target for its board — notably the T-Dongle
 C5, which needs `XIAO_ESP32C5` rather than the obvious `ESP32C5 Dev Module`.
 
+### Build troubleshooting
+
+#### "Sketch too big" / `text section exceeds available space in board`
+
+The single most common build failure. **This is a menu setting, not a code
+problem** — the firmware has outgrown the 1.25 MB app partition that most
+default schemes give you.
+
+Fix it in one of two ways:
+
+| | |
+|---|---|
+| **Switch the board profile** | The `XIAO_*` profiles map to larger layouts (3 MB app). For the **T-Dongle C5**, select **`XIAO_ESP32C5`** — despite the name it is the profile that fits, and the sketch has a hardcoded pinmap so nothing board-specific comes from the choice. |
+| **Raise the partition scheme** | **Tools → Partition Scheme → `Huge APP (3MB No OTA/1MB SPIFFS)`** |
+
+Which targets need it:
+
+| Firmware | Board target | Default | With Huge APP |
+|---|---|---|---|
+| Piglet | `XIAO_ESP32S3` | ✅ 44% | — |
+| Piglet | `XIAO_ESP32C5` | ✅ 54% | — |
+| Piglet | `XIAO_ESP32C6` | ❌ **133%** | ✅ 55% |
+| Piglet | `XIAO_ESP32C3` | ❌ **121%** | ✅ 50% |
+| T-Dongle C5 | `XIAO_ESP32C5` | ✅ 52% | — |
+| T-Dongle C5 | `ESP32C5 Dev Module` | ❌ **135%** | ✅ 56% |
+| PigletNode | `XIAO_ESP32C5` | ✅ 41% | — |
+| PigletNode | `ESP32C5 Dev Module` | ❌ **106%** | ✅ 44% |
+| Waveshare C6 | `ESP32C6 Dev Module` | ❌ **100%** | ✅ 42% |
+
+Confirm it worked by checking the reported ceiling — you want
+`Maximum is 3342336 bytes`, not `Maximum is 1310720 bytes`. If it still reads
+1310720, the change didn't take; reselect the board.
+
+> Shipping a `partitions.csv` with the sketch does **not** fix this. The IDE's
+> size check reads `upload.maximum_size` from the board menu and never
+> recomputes it from a partition file, so the build would still be rejected.
+
+#### `fatal error: LovyanGFX.hpp: No such file or directory`
+
+Only the Waveshare C6 port uses LovyanGFX. Install it — see [`LIBRARIES.md`](LIBRARIES.md).
+
+#### NimBLE link errors, or `esp_deep_sleep_enable_gpio_wakeup` undefined
+
+You are on **esp32 core 4.x**. Downgrade to **3.x** in Boards Manager.
+
+#### Missing `NimBLEDevice.h` even with `bleEnabled=false`
+
+NimBLE-Arduino is a **compile-time** dependency on any BT-capable chip, not just
+when BLE is switched on — `PIGLET_HAS_BLE` keys off the chip's `CONFIG_BT_ENABLED`
+and `bleEnabled` only gates it at runtime. Install NimBLE-Arduino **2.x** (1.x
+has an incompatible API).
+
+#### T-Dongle builds but its screen, SD, or GPS don't work
+
+You built the wrong sketch. The dongle needs
+`TDongleC5_Piglet/TDongleC5_Piglet.ino`, not `Arduino Files/Piglet/Piglet.ino` —
+they have different display drivers and pinmaps.
+
 ### Where to Order
 
 I always order everything from JLCPCB because i get the best deals.  However i do understand that people prefer the all in one project offers of PCBway so i have created this project here:
